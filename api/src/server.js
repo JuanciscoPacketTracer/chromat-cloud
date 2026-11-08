@@ -6,6 +6,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import mysql from "mysql2/promise";
+import { migrate } from "./migrate.js";
 import { mysqlToIso, toMysqlTimestamp } from "./time.js";
 
 const port = Number.parseInt(process.env.API_PORT ?? "3000", 10);
@@ -370,10 +371,13 @@ async function getEvent(request, response, sourceId, eventId) {
   const [rows] = await pool.query(
     `SELECT e.event_id, e.occurred_at, e.received_at, e.processed_at,
             e.clock_suspect, e.status, e.derived_data,
+            ar.run_id, ar.algorithm, ar.algorithm_version, ar.model_version,
+            ar.model_sha256, ar.started_at, ar.completed_at, ar.result,
             e.temperature_c, e.humidity_rh, r.storage_path, r.media_type, r.byte_size,
             r.sha256
        FROM monitoring_events e
        JOIN raw_files r ON r.source_id = e.source_id AND r.event_id = e.event_id
+       LEFT JOIN analysis_runs ar ON ar.run_id = e.current_result_run_id
       WHERE e.source_id = ? AND e.event_id = ?`,
     [sourceId, eventId],
   );
@@ -390,6 +394,18 @@ async function getEvent(request, response, sourceId, eventId) {
     processed_at: event.processed_at ? mysqlToIso(event.processed_at) : null,
     clock_suspect: Boolean(event.clock_suspect),
     derived_data: event.derived_data,
+    current_result: event.run_id
+      ? {
+          run_id: Number(event.run_id),
+          algorithm: event.algorithm,
+          algorithm_version: event.algorithm_version,
+          model_version: event.model_version,
+          model_sha256: event.model_sha256,
+          started_at: mysqlToIso(event.started_at),
+          completed_at: mysqlToIso(event.completed_at),
+          result: event.result,
+        }
+      : null,
     temperature_c: event.temperature_c,
     humidity_rh: event.humidity_rh,
     raw_file: {
@@ -442,8 +458,16 @@ const server = http.createServer(async (request, response) => {
   }
 });
 
-server.listen(port, "0.0.0.0", () => {
-  console.log(JSON.stringify({ event: "api_started", port }));
+async function start() {
+  await migrate();
+  server.listen(port, "0.0.0.0", () => {
+    console.log(JSON.stringify({ event: "api_started", port }));
+  });
+}
+
+start().catch((error) => {
+  console.error(JSON.stringify({ event: "api_start_failed", error: error.message }));
+  process.exit(1);
 });
 
 async function shutdown(signal) {

@@ -12,6 +12,8 @@
   },
   "dependencies": {
     "busboy": "1.6.0",
-    "mysql2": "3.14.1"
+    "jpeg-js": "0.4.4",
+    "mysql2": "3.14.1",
+    "pngjs": "7.0.0"
   }
 }

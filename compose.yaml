@@ -11,14 +11,14 @@ services:
       TZ: ${TZ}
     volumes:
       - db_data:/var/lib/mysql
-      - ./db/migrations/001_initial.sql:/docker-entrypoint-initdb.d/001_initial.sql:ro
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
     networks:
       - internal
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          "mariadb -h 127.0.0.1 -u root -p\"$${MARIADB_ROOT_PASSWORD}\" -e \"SELECT 1 FROM schema_migrations WHERE version = '001_initial' LIMIT 1\" --skip-column-names | grep -q 001_initial"
+          "mariadb -h 127.0.0.1 -u root -p\"$${MARIADB_ROOT_PASSWORD}\" -e \"SELECT 1 FROM schema_migrations WHERE version = '001_initial' LIMIT 1\" --skip-column-names | grep -q 1"
         ]
       interval: 5s
       timeout: 5s
@@ -45,6 +45,7 @@ services:
       TZ: ${TZ}
     volumes:
       - raw_data:/app/uploads
+      - ./db/migrations:/app/migrations:ro
     networks:
       - internal
     depends_on:
@@ -62,6 +63,34 @@ services:
       timeout: 5s
       retries: 20
       start_period: 5s
+
+  worker:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+      platforms:
+        - linux/amd64
+    image: chromat-api:dev
+    command: ["node", "src/worker.js"]
+    environment:
+      APP_ENV: ${APP_ENV}
+      DB_HOST: db
+      DB_PORT: ${DB_PORT}
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      RAW_DATA_DIR: ${RAW_DATA_DIR}
+      WORKER_LEASE_SECONDS: ${WORKER_LEASE_SECONDS}
+      WORKER_POLL_MS: ${WORKER_POLL_MS}
+      TZ: ${TZ}
+    volumes:
+      - raw_data:/app/uploads
+      - ./db/migrations:/app/migrations:ro
+    networks:
+      - internal
+    depends_on:
+      db:
+        condition: service_healthy
 
   nginx:
     image: nginx:1.29.2-alpine
