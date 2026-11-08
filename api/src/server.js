@@ -366,6 +366,29 @@ async function adminUpdateSource(request, response, sourceId) {
     errorResponse(response, 404, "not_found", "Source not found");
     return;
   }
+  if (body.chat_id !== undefined) {
+    const [sourceRows] = await pool.query(
+      "SELECT crop FROM monitoring_sources WHERE source_id = ?",
+      [sourceId],
+    );
+    const crop = body.crop ?? sourceRows[0]?.crop;
+    if (crop) {
+      if (body.chat_id === null) {
+        await pool.query(
+          "DELETE FROM monitoring_source_alerts WHERE source_id = ? AND crop = ?",
+          [sourceId, crop],
+        );
+      } else {
+        await pool.query(
+          `INSERT INTO monitoring_source_alerts
+            (source_id, crop, chat_id, created_at)
+           VALUES (?, ?, ?, UTC_TIMESTAMP(3))
+           ON DUPLICATE KEY UPDATE chat_id = VALUES(chat_id)`,
+          [sourceId, crop, body.chat_id],
+        );
+      }
+    }
+  }
   await audit("source_updated", request, session.operator_id, {
     source_id: sourceId,
     status: body.status ?? undefined,
