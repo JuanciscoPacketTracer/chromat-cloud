@@ -40,6 +40,7 @@ services:
       DB_NAME: ${DB_NAME}
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
+      RAW_DATA_DIR: ${RAW_DATA_DIR}
       TZ: ${TZ}
     networks:
       - internal

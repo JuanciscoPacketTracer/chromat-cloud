@@ -7,9 +7,11 @@
     "node": "26.x"
   },
   "scripts": {
-    "start": "node src/server.js"
+    "start": "node src/server.js",
+    "create-source": "node src/create-source.js"
   },
   "dependencies": {
+    "busboy": "1.6.0",
     "mysql2": "3.14.1"
   }
 }
