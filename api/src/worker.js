@@ -14,7 +14,10 @@ const processingDelayMs = Number.parseInt(
 const inferenceUrl = process.env.INFERENCE_URL ?? "http://inference:8000";
 const inferenceModelVersion = process.env.INFERENCE_MODEL_VERSION;
 const inferenceModelSha256 = process.env.INFERENCE_MODEL_SHA256;
-const officialAlgorithm = process.env.OFFICIAL_ALGORITHM ?? "hsv";
+const officialAlgorithm = process.env.OFFICIAL_ALGORITHM;
+if (!["hsv", "cnn"].includes(officialAlgorithm)) {
+  throw new Error("OFFICIAL_ALGORITHM must be hsv or cnn");
+}
 const workerId = `${process.env.HOSTNAME ?? "worker"}-${crypto.randomUUID()}`;
 const rawRoot = process.env.RAW_DATA_DIR ?? "/app/uploads";
 const pool = mysql.createPool({
@@ -197,7 +200,7 @@ async function completeJob(job, results, startedAt) {
   }
 }
 
-async function failJob(job, error) {
+async function failJob(job, error, algorithm) {
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
@@ -227,12 +230,16 @@ async function failJob(job, error) {
     await connection.query(
       `INSERT INTO analysis_runs
         (source_id, event_id, algorithm, algorithm_version, started_at,
-         completed_at, status, error_message)
-       VALUES (?, ?, 'hsv', '1', ?, UTC_TIMESTAMP(3), 'failed', ?)`,
+         completed_at, status, model_version, model_sha256, error_message)
+       VALUES (?, ?, ?, ?, ?, UTC_TIMESTAMP(3), 'failed', ?, ?, ?)`,
       [
         job.source_id,
         job.event_id,
+        algorithm,
+        algorithm === "cnn" ? "contract-1" : "1",
         toMysqlTimestamp(new Date()),
+        algorithm === "cnn" ? inferenceModelVersion : null,
+        algorithm === "cnn" ? inferenceModelSha256 : null,
         error.message.slice(0, 255),
       ],
     );
@@ -254,6 +261,7 @@ async function failJob(job, error) {
 
 async function processJob(job) {
   const startedAt = new Date();
+  let algorithm = "hsv";
   const heartbeatTimer = setInterval(() => {
     heartbeat(job).catch((error) => console.error(JSON.stringify({
       event: "job_heartbeat_failed",
@@ -263,10 +271,11 @@ async function processJob(job) {
   try {
     if (processingDelayMs > 0) await sleep(processingDelayMs);
     const hsv = await classifyHsv(`${rawRoot}/${job.storage_path}`);
+    algorithm = "cnn";
     const cnn = await classifyCnn(job);
     await completeJob(job, [hsv, cnn], startedAt);
   } catch (error) {
-    await failJob(job, error);
+    await failJob(job, error, algorithm);
     console.error(JSON.stringify({
       event: "job_failed",
       source_id: job.source_id,
