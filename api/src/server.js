@@ -101,6 +101,7 @@ function consumeLoginLimit(request) {
 async function authenticateAdmin(request, response) {
   const token = parseCookies(request).chromat_session;
   if (!token) {
+    await audit("admin_access_denied", request);
     errorResponse(response, 401, "unauthorized", "Administrative session required");
     return null;
   }

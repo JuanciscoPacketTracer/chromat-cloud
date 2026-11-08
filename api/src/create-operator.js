@@ -26,12 +26,19 @@ const pool = mysql.createPool({
   password: process.env.DB_PASSWORD,
   dateStrings: true,
 });
+const connection = await pool.getConnection();
 try {
-  const [countRows] = await pool.query("SELECT COUNT(*) AS count FROM operators");
+  const [lockRows] = await connection.query(
+    "SELECT GET_LOCK('chromat_first_operator', 30) AS acquired",
+  );
+  if (Number(lockRows[0]?.acquired) !== 1) {
+    throw new Error("operator_creation_lock_timeout");
+  }
+  const [countRows] = await connection.query("SELECT COUNT(*) AS count FROM operators");
   if (Number(countRows[0].count) !== 0) {
     throw new Error("first_operator_already_exists");
   }
-  await pool.query(
+  await connection.query(
     `INSERT INTO operators
       (operator_id, username, password_hash, created_at)
      VALUES (?, ?, ?, UTC_TIMESTAMP(3))`,
@@ -39,5 +46,7 @@ try {
   );
   console.log(`Created operator: ${username}`);
 } finally {
+  await connection.query("SELECT RELEASE_LOCK('chromat_first_operator')");
+  connection.release();
   await pool.end();
 }
