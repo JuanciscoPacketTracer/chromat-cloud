@@ -30,6 +30,12 @@ try {
      VALUES (?, ?, ?, ?, ?)`,
     [sourceId, name, apiKeyPrefix, apiKeyHash, mysqlTimestamp],
   );
+  await connection.execute(
+    `INSERT INTO monitoring_source_keys
+      (key_id, source_id, api_key_prefix, api_key_hash, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
+    [crypto.randomUUID(), sourceId, apiKeyPrefix, apiKeyHash, mysqlTimestamp],
+  );
   console.log(JSON.stringify({ source_id: sourceId, name, api_key: apiKey }));
 } finally {
   await connection.end();

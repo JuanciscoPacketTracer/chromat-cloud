@@ -25,6 +25,7 @@ fail() {
 [[ -f tests/smoke/processing.sh ]] || fail "processing smoke test is missing"
 [[ -f tests/smoke/inference.sh ]] || fail "inference smoke test is missing"
 [[ -f tests/smoke/admin-auth.sh ]] || fail "admin auth smoke test is missing"
+[[ -f tests/smoke/source-management.sh ]] || fail "source management smoke test is missing"
 [[ -f scripts/dev-tls.sh ]] || fail "development TLS script is missing"
 
 compose_config="$(mktemp)"

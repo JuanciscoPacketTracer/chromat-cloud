@@ -232,6 +232,219 @@ async function adminAudit(request, response) {
   });
 }
 
+function createSourceKey() {
+  const apiKey = `chm_${crypto.randomBytes(32).toString("base64url")}`;
+  return {
+    apiKey,
+    prefix: apiKey.slice(0, 20),
+    hash: crypto.createHash("sha256").update(apiKey).digest(),
+  };
+}
+
+async function adminSessionWithCsrf(request, response) {
+  const session = await authenticateAdmin(request, response);
+  if (!session || !(await requireCsrf(request, response, session))) return null;
+  return session;
+}
+
+async function adminCreateSource(request, response) {
+  const session = await adminSessionWithCsrf(request, response);
+  if (!session) return;
+  const body = await parseJsonBody(request);
+  if (
+    typeof body.name !== "string" ||
+    typeof body.crop !== "string" ||
+    typeof body.is_test !== "boolean"
+  ) {
+    errorResponse(response, 422, "invalid_source", "name, crop and is_test are required");
+    return;
+  }
+  const sourceId = crypto.randomUUID();
+  const key = createSourceKey();
+  await pool.query(
+    `INSERT INTO monitoring_sources
+      (source_id, name, api_key_prefix, api_key_hash, crop, is_test,
+       alert_chat_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3))`,
+    [
+      sourceId,
+      body.name,
+      key.prefix,
+      key.hash,
+      body.crop,
+      body.is_test,
+      body.chat_id ?? null,
+    ],
+  );
+  await pool.query(
+    `INSERT INTO monitoring_source_keys
+      (key_id, source_id, api_key_prefix, api_key_hash, created_at)
+     VALUES (?, ?, ?, ?, UTC_TIMESTAMP(3))`,
+    [crypto.randomUUID(), sourceId, key.prefix, key.hash],
+  );
+  await audit("source_created", request, session.operator_id, {
+    source_id: sourceId,
+    is_test: body.is_test,
+  });
+  sendJson(response, 201, {
+    source_id: sourceId,
+    name: body.name,
+    crop: body.crop,
+    is_test: body.is_test,
+    status: "active",
+    api_key: key.apiKey,
+  });
+}
+
+async function adminListSources(request, response) {
+  const session = await authenticateAdmin(request, response);
+  if (!session) return;
+  const [rows] = await pool.query(
+    `SELECT source_id, name, crop, is_test, status, alert_chat_id, created_at, revoked_at
+       FROM monitoring_sources ORDER BY created_at`,
+  );
+  sendJson(response, 200, {
+    sources: rows.map((row) => ({
+      source_id: row.source_id,
+      name: row.name,
+      crop: row.crop,
+      is_test: Boolean(row.is_test),
+      status: row.status,
+      has_chat_id: Boolean(row.alert_chat_id),
+      created_at: mysqlToIso(row.created_at),
+      revoked_at: row.revoked_at ? mysqlToIso(row.revoked_at) : null,
+    })),
+  });
+}
+
+async function adminUpdateSource(request, response, sourceId) {
+  const session = await adminSessionWithCsrf(request, response);
+  if (!session) return;
+  const body = await parseJsonBody(request);
+  const updates = [];
+  const values = [];
+  if (typeof body.status === "string" && ["active", "paused", "revoked"].includes(body.status)) {
+    updates.push("status = ?", "revoked_at = IF(? = 'revoked', UTC_TIMESTAMP(3), NULL)");
+    values.push(body.status, body.status);
+  }
+  if (typeof body.crop === "string") {
+    updates.push("crop = ?");
+    values.push(body.crop);
+  }
+  if (typeof body.chat_id === "string" || body.chat_id === null) {
+    updates.push("alert_chat_id = ?");
+    values.push(body.chat_id);
+  }
+  if (updates.length === 0) {
+    errorResponse(response, 422, "invalid_source_update", "No valid source fields");
+    return;
+  }
+  values.push(sourceId);
+  const [result] = await pool.query(
+    `UPDATE monitoring_sources SET ${updates.join(", ")} WHERE source_id = ?`,
+    values,
+  );
+  if (result.affectedRows !== 1) {
+    errorResponse(response, 404, "not_found", "Source not found");
+    return;
+  }
+  await audit("source_updated", request, session.operator_id, {
+    source_id: sourceId,
+    status: body.status ?? undefined,
+  });
+  sendJson(response, 200, { source_id: sourceId, updated: true });
+}
+
+async function adminRotateSourceKey(request, response, sourceId) {
+  const session = await adminSessionWithCsrf(request, response);
+  if (!session) return;
+  const body = await parseJsonBody(request);
+  const coexistSeconds = body.coexist_seconds === undefined
+    ? 0
+    : Number.parseInt(body.coexist_seconds, 10);
+  if (!Number.isInteger(coexistSeconds) || coexistSeconds < 0 || coexistSeconds > 86_400) {
+    errorResponse(response, 422, "invalid_coexistence", "coexist_seconds must be 0..86400");
+    return;
+  }
+  const key = createSourceKey();
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [sources] = await connection.query(
+      "SELECT source_id FROM monitoring_sources WHERE source_id = ? FOR UPDATE",
+      [sourceId],
+    );
+    if (sources.length !== 1) {
+      await connection.rollback();
+      errorResponse(response, 404, "not_found", "Source not found");
+      return;
+    }
+    await connection.query(
+      `UPDATE monitoring_source_keys
+          SET expires_at = IF(? > 0, DATE_ADD(UTC_TIMESTAMP(3), INTERVAL ? SECOND), UTC_TIMESTAMP(3))
+        WHERE source_id = ? AND revoked_at IS NULL AND expires_at IS NULL`,
+      [coexistSeconds, coexistSeconds, sourceId],
+    );
+    await connection.query(
+      `INSERT INTO monitoring_source_keys
+        (key_id, source_id, api_key_prefix, api_key_hash, created_at)
+       VALUES (?, ?, ?, ?, UTC_TIMESTAMP(3))`,
+      [crypto.randomUUID(), sourceId, key.prefix, key.hash],
+    );
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+  await audit("source_key_rotated", request, session.operator_id, {
+    source_id: sourceId,
+    coexist_seconds: coexistSeconds,
+  });
+  sendJson(response, 201, { source_id: sourceId, api_key: key.apiKey });
+}
+
+async function adminCreateProducer(request, response) {
+  const session = await adminSessionWithCsrf(request, response);
+  if (!session) return;
+  const body = await parseJsonBody(request);
+  if (typeof body.username !== "string" || typeof body.password !== "string") {
+    errorResponse(response, 422, "invalid_producer", "username and password are required");
+    return;
+  }
+  const producerId = crypto.randomUUID();
+  await pool.query(
+    `INSERT INTO producer_accounts
+      (producer_id, username, password_hash, created_at)
+     VALUES (?, ?, ?, UTC_TIMESTAMP(3))`,
+    [producerId, body.username, await argon2.hash(body.password, { type: argon2.argon2id })],
+  );
+  await audit("producer_created", request, session.operator_id, { producer_id: producerId });
+  sendJson(response, 201, { producer_id: producerId, username: body.username });
+}
+
+async function adminAssignProducer(request, response, producerId) {
+  const session = await adminSessionWithCsrf(request, response);
+  if (!session) return;
+  const body = await parseJsonBody(request);
+  if (typeof body.source_id !== "string") {
+    errorResponse(response, 422, "invalid_assignment", "source_id is required");
+    return;
+  }
+  await pool.query(
+    `INSERT INTO producer_source_assignments
+      (producer_id, source_id, permission, created_at)
+     VALUES (?, ?, 'read', UTC_TIMESTAMP(3))`,
+    [producerId, body.source_id],
+  );
+  await audit("producer_source_assigned", request, session.operator_id, {
+    producer_id: producerId,
+    source_id: body.source_id,
+  });
+  sendJson(response, 201, { producer_id: producerId, source_id: body.source_id, permission: "read" });
+}
+
 function parseBearerToken(request) {
   const authorization = request.headers.authorization ?? "";
   const match = authorization.match(/^Bearer ([A-Za-z0-9_-]+)$/);
@@ -271,7 +484,13 @@ async function authenticate(request, response) {
   }
 
   const [rows] = await pool.query(
-    "SELECT source_id, api_key_hash FROM monitoring_sources WHERE api_key_prefix = ? AND status = 'active' LIMIT 1",
+    `SELECT s.source_id, k.api_key_hash
+       FROM monitoring_source_keys k
+       JOIN monitoring_sources s ON s.source_id = k.source_id
+      WHERE k.api_key_prefix = ? AND k.revoked_at IS NULL
+        AND (k.expires_at IS NULL OR k.expires_at > UTC_TIMESTAMP(3))
+        AND s.status = 'active'
+      LIMIT 1`,
     [prefix],
   );
   const source = rows[0];
@@ -496,8 +715,9 @@ async function ingestEvent(request, response, sourceId) {
       await connection.query(
         `INSERT INTO monitoring_events
           (source_id, event_id, occurred_at, received_at, clock_suspect, status,
-           temperature_c, humidity_rh, image_sha256, created_at)
-         VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`,
+           crop, temperature_c, humidity_rh, image_sha256, created_at)
+         SELECT ?, ?, ?, ?, ?, 'pending', crop, ?, ?, ?, ?
+           FROM monitoring_sources WHERE source_id = ?`,
         [
           sourceId,
           eventId,
@@ -508,6 +728,7 @@ async function ingestEvent(request, response, sourceId) {
           metadata.humidity_rh ?? null,
           image.sha256,
           receivedMysql,
+          sourceId,
         ],
       );
       await connection.query(
@@ -561,7 +782,7 @@ async function ingestEvent(request, response, sourceId) {
 async function getEvent(request, response, sourceId, eventId) {
   const [rows] = await pool.query(
     `SELECT e.event_id, e.occurred_at, e.received_at, e.processed_at,
-            e.clock_suspect, e.status, e.derived_data,
+            e.clock_suspect, e.status, e.crop, e.derived_data,
             ar.run_id, ar.algorithm, ar.algorithm_version, ar.model_version,
             ar.model_sha256, ar.started_at, ar.completed_at, ar.result,
             (SELECT COUNT(*) FROM analysis_runs ar_count
@@ -611,6 +832,7 @@ async function getEvent(request, response, sourceId, eventId) {
     received_at: mysqlToIso(event.received_at),
     processed_at: event.processed_at ? mysqlToIso(event.processed_at) : null,
     clock_suspect: Boolean(event.clock_suspect),
+    crop: event.crop,
     derived_data: event.derived_data,
     current_result: event.run_id
       ? {
@@ -666,6 +888,43 @@ const server = http.createServer(async (request, response) => {
     }
     if (request.method === "GET" && parsedUrl.pathname === "/api/v1/admin/audit") {
       await adminAudit(request, response);
+      return;
+    }
+    if (request.method === "POST" && parsedUrl.pathname === "/api/v1/admin/sources") {
+      await adminCreateSource(request, response);
+      return;
+    }
+    if (request.method === "GET" && parsedUrl.pathname === "/api/v1/admin/sources") {
+      await adminListSources(request, response);
+      return;
+    }
+    const sourceAdminMatch = parsedUrl.pathname.match(
+      /^\/api\/v1\/admin\/sources\/([0-9a-f-]{36})(?:\/(keys))?$/,
+    );
+    if (sourceAdminMatch && isUuidV4(sourceAdminMatch[1])) {
+      const sourceId = sourceAdminMatch[1].toLowerCase();
+      if (request.method === "PATCH" && !sourceAdminMatch[2]) {
+        await adminUpdateSource(request, response, sourceId);
+        return;
+      }
+      if (request.method === "POST" && sourceAdminMatch[2] === "keys") {
+        await adminRotateSourceKey(request, response, sourceId);
+        return;
+      }
+    }
+    if (request.method === "POST" && parsedUrl.pathname === "/api/v1/admin/producers") {
+      await adminCreateProducer(request, response);
+      return;
+    }
+    const producerAssignmentMatch = parsedUrl.pathname.match(
+      /^\/api\/v1\/admin\/producers\/([0-9a-f-]{36})\/sources$/,
+    );
+    if (
+      request.method === "POST" &&
+      producerAssignmentMatch &&
+      isUuidV4(producerAssignmentMatch[1])
+    ) {
+      await adminAssignProducer(request, response, producerAssignmentMatch[1].toLowerCase());
       return;
     }
     const eventMatch = parsedUrl.pathname.match(
