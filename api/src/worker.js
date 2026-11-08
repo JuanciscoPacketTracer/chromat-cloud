@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import fs from "node:fs/promises";
 import mysql from "mysql2/promise";
 import { classifyHsv } from "./hsv.js";
 import { migrate } from "./migrate.js";
@@ -10,6 +11,10 @@ const processingDelayMs = Number.parseInt(
   process.env.WORKER_PROCESSING_DELAY_MS ?? "0",
   10,
 );
+const inferenceUrl = process.env.INFERENCE_URL ?? "http://inference:8000";
+const inferenceModelVersion = process.env.INFERENCE_MODEL_VERSION;
+const inferenceModelSha256 = process.env.INFERENCE_MODEL_SHA256;
+const officialAlgorithm = process.env.OFFICIAL_ALGORITHM ?? "hsv";
 const workerId = `${process.env.HOSTNAME ?? "worker"}-${crypto.randomUUID()}`;
 const rawRoot = process.env.RAW_DATA_DIR ?? "/app/uploads";
 const pool = mysql.createPool({
@@ -89,7 +94,38 @@ async function heartbeat(job) {
   );
 }
 
-async function completeJob(job, result, startedAt) {
+async function classifyCnn(job) {
+  const image = await fs.readFile(`${rawRoot}/${job.storage_path}`);
+  const inputSha256 = crypto.createHash("sha256").update(image).digest("hex");
+  const response = await fetch(`${inferenceUrl}/v1/classify`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      event_id: job.event_id,
+      raw_sha256: inputSha256,
+      image_base64: image.toString("base64"),
+    }),
+  });
+  const result = await response.json();
+  if (!response.ok) {
+    throw Object.assign(new Error(result.error ?? "inference_failed"), {
+      permanent: response.status < 500,
+    });
+  }
+  if (
+    result.algorithm !== "cnn" ||
+    result.model_version !== inferenceModelVersion ||
+    result.model_sha256 !== inferenceModelSha256 ||
+    result.input_sha256 !== inputSha256
+  ) {
+    throw Object.assign(new Error("inference_contract_mismatch"), {
+      permanent: true,
+    });
+  }
+  return result;
+}
+
+async function completeJob(job, results, startedAt) {
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
@@ -104,19 +140,35 @@ async function completeJob(job, result, startedAt) {
       await connection.rollback();
       return;
     }
-    const [run] = await connection.query(
+    const runIds = {};
+    for (const result of results) {
+      const [run] = await connection.query(
       `INSERT INTO analysis_runs
         (source_id, event_id, algorithm, algorithm_version, started_at,
-         completed_at, status, result)
-       VALUES (?, ?, 'hsv', '1', ?, ?, 'completed', ?)`,
-      [
-        job.source_id,
-        job.event_id,
-        toMysqlTimestamp(startedAt),
-        toMysqlTimestamp(completedAt),
-        JSON.stringify(result),
-      ],
+         completed_at, status, model_version, model_sha256, result)
+       VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?)`,
+        [
+          job.source_id,
+          job.event_id,
+          result.algorithm,
+          result.algorithm_version,
+          toMysqlTimestamp(startedAt),
+          toMysqlTimestamp(completedAt),
+          result.model_version ?? null,
+          result.model_sha256 ?? null,
+          JSON.stringify(result),
+        ],
+      );
+      runIds[result.algorithm] = run.insertId;
+    }
+    const officialResult = results.find(
+      (result) => result.algorithm === officialAlgorithm,
     );
+    if (!officialResult) {
+      throw Object.assign(new Error("official_algorithm_unavailable"), {
+        permanent: true,
+      });
+    }
     await connection.query(
       `UPDATE monitoring_events
           SET status = 'completed', processed_at = ?, derived_data = ?,
@@ -124,8 +176,8 @@ async function completeJob(job, result, startedAt) {
         WHERE source_id = ? AND event_id = ?`,
       [
         toMysqlTimestamp(completedAt),
-        JSON.stringify(result),
-        run.insertId,
+        JSON.stringify(officialResult),
+        runIds[officialAlgorithm],
         job.source_id,
         job.event_id,
       ],
@@ -210,8 +262,9 @@ async function processJob(job) {
   }, Math.max(1000, Math.floor((leaseSeconds * 1000) / 3)));
   try {
     if (processingDelayMs > 0) await sleep(processingDelayMs);
-    const result = await classifyHsv(`${rawRoot}/${job.storage_path}`);
-    await completeJob(job, result, startedAt);
+    const hsv = await classifyHsv(`${rawRoot}/${job.storage_path}`);
+    const cnn = await classifyCnn(job);
+    await completeJob(job, [hsv, cnn], startedAt);
   } catch (error) {
     await failJob(job, error);
     console.error(JSON.stringify({

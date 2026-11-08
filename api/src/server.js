@@ -389,6 +389,29 @@ async function getEvent(request, response, sourceId, eventId) {
     return;
   }
   const event = rows[0];
+  const [analysisRows] = await pool.query(
+    `SELECT run_id, algorithm, algorithm_version, model_version, model_sha256,
+            started_at, completed_at, status, result, error_message
+       FROM analysis_runs
+      WHERE source_id = ? AND event_id = ?
+      ORDER BY run_id`,
+    [sourceId, eventId],
+  );
+  const analysisRuns = analysisRows.map((run) => ({
+    run_id: Number(run.run_id),
+    algorithm: run.algorithm,
+    algorithm_version: run.algorithm_version,
+    model_version: run.model_version,
+    model_sha256: run.model_sha256,
+    started_at: mysqlToIso(run.started_at),
+    completed_at: run.completed_at ? mysqlToIso(run.completed_at) : null,
+    status: run.status,
+    result: run.result,
+    error_message: run.error_message,
+  }));
+  const comparison = Object.fromEntries(
+    analysisRuns.map((run) => [run.algorithm, run.result]),
+  );
   sendJson(response, 200, {
     event_id: event.event_id,
     status: event.status,
@@ -410,6 +433,8 @@ async function getEvent(request, response, sourceId, eventId) {
         }
       : null,
     analysis_runs_count: Number(event.analysis_runs_count),
+    analysis_runs: analysisRuns,
+    comparison,
     temperature_c: event.temperature_c,
     humidity_rh: event.humidity_rh,
     raw_file: {

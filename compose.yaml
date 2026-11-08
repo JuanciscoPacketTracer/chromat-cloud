@@ -83,6 +83,10 @@ services:
       WORKER_LEASE_SECONDS: ${WORKER_LEASE_SECONDS}
       WORKER_POLL_MS: ${WORKER_POLL_MS}
       WORKER_PROCESSING_DELAY_MS: ${WORKER_PROCESSING_DELAY_MS}
+      INFERENCE_URL: ${INFERENCE_URL}
+      INFERENCE_MODEL_VERSION: ${INFERENCE_MODEL_VERSION}
+      INFERENCE_MODEL_SHA256: ${INFERENCE_MODEL_SHA256}
+      OFFICIAL_ALGORITHM: ${OFFICIAL_ALGORITHM}
       TZ: ${TZ}
     volumes:
       - raw_data:/app/uploads
@@ -92,6 +96,35 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      inference:
+        condition: service_healthy
+
+  inference:
+    build:
+      context: ./inference
+      dockerfile: Dockerfile
+      platforms:
+        - linux/amd64
+    image: chromat-inference:dev
+    environment:
+      INFERENCE_PORT: ${INFERENCE_PORT}
+      MODEL_PATH: /app/models/deterministic-model.json
+      MODEL_VERSION: ${INFERENCE_MODEL_VERSION}
+      MODEL_SHA256: ${INFERENCE_MODEL_SHA256}
+    networks:
+      - internal
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
 
   nginx:
     image: nginx:1.29.2-alpine

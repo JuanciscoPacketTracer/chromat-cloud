@@ -18,7 +18,7 @@ curl --silent --show-error --fail-with-body --insecure \
   -X POST "$base_url/api/v1/events" \
   -H "Authorization: Bearer $api_key" \
   -F "metadata={\"event_id\":\"$event_id\",\"occurred_at\":\"$occurred_at\"};type=application/json" \
-  -F "image=@$image_file;type=image/jpeg"
+  -F "image=@$image_file;type=image/png"
 
 processing_seen=false
 for _ in $(seq 1 30); do
