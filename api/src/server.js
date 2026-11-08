@@ -5,6 +5,7 @@ import fsp from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import argon2 from "argon2";
 import mysql from "mysql2/promise";
 import { migrate } from "./migrate.js";
 import { mysqlToIso, toMysqlTimestamp } from "./time.js";
@@ -26,6 +27,7 @@ const pool = mysql.createPool({
   dateStrings: true,
 });
 const rateBuckets = new Map();
+const loginBuckets = new Map();
 
 function sendJson(response, statusCode, body, headers = {}) {
   const payload = JSON.stringify(body);
@@ -39,6 +41,194 @@ function sendJson(response, statusCode, body, headers = {}) {
 
 function errorResponse(response, statusCode, error, message, headers = {}) {
   sendJson(response, statusCode, { error, message }, headers);
+}
+
+function parseCookies(request) {
+  return Object.fromEntries(
+    (request.headers.cookie ?? "")
+      .split(";")
+      .map((part) => part.trim().split("="))
+      .filter(([name, value]) => name && value)
+      .map(([name, ...value]) => [name, value.join("=")]),
+  );
+}
+
+function parseJsonBody(request) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > 32_768) reject(Object.assign(new Error("body_too_large"), { statusCode: 413 }));
+    });
+    request.on("end", () => {
+      try {
+        resolve(JSON.parse(body));
+      } catch {
+        reject(Object.assign(new Error("invalid_json"), { statusCode: 400 }));
+      }
+    });
+    request.on("error", reject);
+  });
+}
+
+async function audit(action, request, operatorId = null, metadata = null) {
+  await pool.query(
+    `INSERT INTO audit_log
+      (occurred_at, action, operator_id, request_ip, metadata)
+     VALUES (UTC_TIMESTAMP(3), ?, ?, ?, ?)`,
+    [
+      action,
+      operatorId,
+      request.socket.remoteAddress ?? null,
+      metadata ? JSON.stringify(metadata) : null,
+    ],
+  );
+}
+
+function consumeLoginLimit(request) {
+  const key = request.socket.remoteAddress ?? "unknown";
+  const now = Date.now();
+  const bucket = loginBuckets.get(key);
+  if (!bucket || now - bucket.startedAt >= 15 * 60_000) {
+    loginBuckets.set(key, { startedAt: now, count: 1 });
+    return true;
+  }
+  bucket.count += 1;
+  return bucket.count <= 10;
+}
+
+async function authenticateAdmin(request, response) {
+  const token = parseCookies(request).chromat_session;
+  if (!token) {
+    errorResponse(response, 401, "unauthorized", "Administrative session required");
+    return null;
+  }
+  const tokenHash = crypto.createHash("sha256").update(token).digest();
+  const [rows] = await pool.query(
+    `SELECT s.session_id, s.operator_id, s.csrf_hash, o.username
+       FROM admin_sessions s
+       JOIN operators o ON o.operator_id = s.operator_id
+      WHERE s.token_hash = ? AND s.revoked_at IS NULL
+        AND s.expires_at > UTC_TIMESTAMP(3) AND o.status = 'active'
+      LIMIT 1`,
+    [tokenHash],
+  );
+  if (rows.length === 0) {
+    await audit("admin_access_denied", request);
+    errorResponse(response, 401, "unauthorized", "Administrative session required");
+    return null;
+  }
+  return { ...rows[0], tokenHash };
+}
+
+async function requireCsrf(request, response, session) {
+  const token = request.headers["x-csrf-token"];
+  const tokenHash = token
+    ? crypto.createHash("sha256").update(token).digest()
+    : null;
+  if (
+    !tokenHash ||
+    session.csrf_hash.length !== tokenHash.length ||
+    !crypto.timingSafeEqual(session.csrf_hash, tokenHash)
+  ) {
+    await audit("csrf_rejected", request, session.operator_id);
+    errorResponse(response, 403, "csrf_required", "Valid CSRF token required");
+    return false;
+  }
+  return true;
+}
+
+async function adminLogin(request, response) {
+  if (!consumeLoginLimit(request)) {
+    await audit("login_rate_limited", request);
+    errorResponse(response, 429, "rate_limited", "Login rate limit exceeded", {
+      "retry-after": "900",
+    });
+    return;
+  }
+  let credentials;
+  try {
+    credentials = await parseJsonBody(request);
+  } catch (error) {
+    errorResponse(response, error.statusCode ?? 400, error.message, "Invalid login request");
+    return;
+  }
+  const username = typeof credentials.username === "string" ? credentials.username : "";
+  const password = typeof credentials.password === "string" ? credentials.password : "";
+  const [rows] = await pool.query(
+    "SELECT operator_id, username, password_hash FROM operators WHERE username = ? AND status = 'active' LIMIT 1",
+    [username],
+  );
+  const operator = rows[0];
+  const valid = operator
+    ? await argon2.verify(operator.password_hash, password)
+    : false;
+  if (!valid) {
+    await audit("login_failed", request, operator?.operator_id ?? null);
+    errorResponse(response, 401, "unauthorized", "Invalid credentials");
+    return;
+  }
+
+  const sessionToken = crypto.randomBytes(32).toString("base64url");
+  const csrfToken = crypto.randomBytes(32).toString("base64url");
+  await pool.query(
+    `INSERT INTO admin_sessions
+      (session_id, operator_id, token_hash, csrf_hash, expires_at, created_at)
+     VALUES (?, ?, ?, ?, DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 8 HOUR), UTC_TIMESTAMP(3))`,
+    [
+      crypto.randomUUID(),
+      operator.operator_id,
+      crypto.createHash("sha256").update(sessionToken).digest(),
+      crypto.createHash("sha256").update(csrfToken).digest(),
+    ],
+  );
+  await pool.query(
+    "UPDATE operators SET last_login_at = UTC_TIMESTAMP(3) WHERE operator_id = ?",
+    [operator.operator_id],
+  );
+  await audit("login_succeeded", request, operator.operator_id);
+  sendJson(
+    response,
+    200,
+    { operator: { username: operator.username }, csrf_token: csrfToken },
+    {
+      "set-cookie": "chromat_session=" +
+        `${sessionToken}; Max-Age=28800; Path=/api/v1/admin; Secure; HttpOnly; SameSite=Strict`,
+    },
+  );
+}
+
+async function adminLogout(request, response) {
+  const session = await authenticateAdmin(request, response);
+  if (!session || !(await requireCsrf(request, response, session))) return;
+  await pool.query(
+    "UPDATE admin_sessions SET revoked_at = UTC_TIMESTAMP(3) WHERE session_id = ?",
+    [session.session_id],
+  );
+  await audit("logout", request, session.operator_id);
+  response.writeHead(204, {
+    "set-cookie": "chromat_session=; Max-Age=0; Path=/api/v1/admin; Secure; HttpOnly; SameSite=Strict",
+  });
+  response.end();
+}
+
+async function adminAudit(request, response) {
+  const session = await authenticateAdmin(request, response);
+  if (!session) return;
+  const [rows] = await pool.query(
+    `SELECT occurred_at, action, operator_id, request_ip, metadata
+       FROM audit_log ORDER BY audit_id DESC LIMIT 100`,
+  );
+  sendJson(response, 200, {
+    entries: rows.map((row) => ({
+      occurred_at: mysqlToIso(row.occurred_at),
+      action: row.action,
+      operator_id: row.operator_id,
+      request_ip: row.request_ip,
+      metadata: row.metadata,
+    })),
+  });
 }
 
 function parseBearerToken(request) {
@@ -385,6 +575,7 @@ async function getEvent(request, response, sourceId, eventId) {
     [sourceId, eventId],
   );
   if (rows.length === 0) {
+    await audit("event_access_denied", request, null, { event_id: eventId });
     errorResponse(response, 404, "not_found", "Event not found");
     return;
   }
@@ -464,6 +655,18 @@ const server = http.createServer(async (request, response) => {
     }
 
     const parsedUrl = new URL(request.url, `http://${request.headers.host}`);
+    if (request.method === "POST" && parsedUrl.pathname === "/api/v1/admin/login") {
+      await adminLogin(request, response);
+      return;
+    }
+    if (request.method === "POST" && parsedUrl.pathname === "/api/v1/admin/logout") {
+      await adminLogout(request, response);
+      return;
+    }
+    if (request.method === "GET" && parsedUrl.pathname === "/api/v1/admin/audit") {
+      await adminAudit(request, response);
+      return;
+    }
     const eventMatch = parsedUrl.pathname.match(
       /^\/api\/v1\/events\/([0-9a-f-]{36})$/i,
     );

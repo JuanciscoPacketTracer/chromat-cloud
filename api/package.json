@@ -8,9 +8,11 @@
   },
   "scripts": {
     "start": "node src/server.js",
-    "create-source": "node src/create-source.js"
+    "create-source": "node src/create-source.js",
+    "create-operator": "node src/create-operator.js"
   },
   "dependencies": {
+    "argon2": "0.41.1",
     "busboy": "1.6.0",
     "jpeg-js": "0.4.4",
     "mysql2": "3.14.1",
