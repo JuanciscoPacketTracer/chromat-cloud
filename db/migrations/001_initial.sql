@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version VARCHAR(64) NOT NULL PRIMARY KEY,
+  applied_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+) ENGINE=InnoDB;
+
+INSERT IGNORE INTO schema_migrations (version)
+VALUES ("001_initial");

@@ -1,0 +1,15 @@
+{
+  "name": "chromat-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "26.x"
+  },
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "mysql2": "3.14.1"
+  }
+}
