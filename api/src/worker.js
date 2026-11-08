@@ -55,13 +55,6 @@ async function claimJob() {
     }
 
     const job = rows[0];
-    await connection.query(
-      `UPDATE analysis_runs
-          SET status = 'failed', completed_at = UTC_TIMESTAMP(3),
-              error_message = 'lease expired before completion'
-        WHERE source_id = ? AND event_id = ? AND status = 'running'`,
-      [job.source_id, job.event_id],
-    );
     const attempts = Number(job.attempts) + 1;
     await connection.query(
       `UPDATE jobs
