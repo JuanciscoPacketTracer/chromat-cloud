@@ -3,9 +3,6 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
   applied_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
 ) ENGINE=InnoDB;
 
-INSERT IGNORE INTO schema_migrations (version)
-VALUES ("001_initial");
-
 CREATE TABLE IF NOT EXISTS monitoring_sources (
   source_id CHAR(36) NOT NULL PRIMARY KEY,
   name VARCHAR(120) NOT NULL,
@@ -21,8 +18,10 @@ CREATE TABLE IF NOT EXISTS monitoring_events (
   event_id CHAR(36) NOT NULL,
   occurred_at DATETIME(3) NOT NULL,
   received_at DATETIME(3) NOT NULL,
+  processed_at DATETIME(3) NULL,
   clock_suspect BOOLEAN NOT NULL DEFAULT FALSE,
   status ENUM('pending', 'processing', 'completed', 'failed') NOT NULL DEFAULT 'pending',
+  derived_data JSON NULL,
   temperature_c DECIMAL(6,2) NULL,
   humidity_rh DECIMAL(6,2) NULL,
   image_sha256 CHAR(64) NOT NULL,
@@ -58,3 +57,6 @@ CREATE TABLE IF NOT EXISTS jobs (
     FOREIGN KEY (source_id, event_id)
     REFERENCES monitoring_events (source_id, event_id)
 ) ENGINE=InnoDB;
+
+INSERT IGNORE INTO schema_migrations (version)
+VALUES ("001_initial");

@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import mysql from "mysql2/promise";
+import { toMysqlTimestamp } from "./time.js";
 
 const nameIndex = process.argv.indexOf("--name");
 const name = nameIndex >= 0 ? process.argv[nameIndex + 1] : null;
@@ -12,8 +13,7 @@ const sourceId = crypto.randomUUID();
 const apiKey = `chm_${crypto.randomBytes(32).toString("base64url")}`;
 const apiKeyPrefix = apiKey.slice(0, 20);
 const apiKeyHash = crypto.createHash("sha256").update(apiKey).digest();
-const now = new Date();
-const mysqlTimestamp = now.toISOString().replace("T", " ").replace("Z", "");
+const mysqlTimestamp = toMysqlTimestamp(new Date());
 
 const connection = await mysql.createConnection({
   host: process.env.DB_HOST ?? "db",

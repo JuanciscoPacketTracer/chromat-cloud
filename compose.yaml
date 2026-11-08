@@ -41,7 +41,10 @@ services:
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
       RAW_DATA_DIR: ${RAW_DATA_DIR}
+      UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES}
       TZ: ${TZ}
+    volumes:
+      - raw_data:/app/uploads
     networks:
       - internal
     depends_on:
@@ -91,3 +94,5 @@ networks:
 volumes:
   db_data:
     name: chromat_db_data
+  raw_data:
+    name: chromat_raw_data

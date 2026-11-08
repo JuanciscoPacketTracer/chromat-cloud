@@ -6,9 +6,13 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import mysql from "mysql2/promise";
+import { mysqlToIso, toMysqlTimestamp } from "./time.js";
 
 const port = Number.parseInt(process.env.API_PORT ?? "3000", 10);
-const maxUploadBytes = 10 * 1024 * 1024;
+const maxUploadBytes = Number.parseInt(
+  process.env.UPLOAD_MAX_BYTES ?? `${10 * 1024 * 1024}`,
+  10,
+);
 const rawRoot = process.env.RAW_DATA_DIR ?? "/app/uploads";
 const pool = mysql.createPool({
   host: process.env.DB_HOST ?? "db",
@@ -100,15 +104,6 @@ function parseTimestamp(value) {
   }
   const timestamp = new Date(value);
   return Number.isNaN(timestamp.getTime()) ? null : timestamp;
-}
-
-function toMysqlTimestamp(timestamp) {
-  return timestamp.toISOString().replace("T", " ").replace("Z", "");
-}
-
-function mysqlToIso(value) {
-  if (value instanceof Date) return value.toISOString();
-  return `${value.replace(" ", "T")}Z`;
 }
 
 function isUuidV4(value) {
@@ -373,7 +368,8 @@ async function ingestEvent(request, response, sourceId) {
 
 async function getEvent(request, response, sourceId, eventId) {
   const [rows] = await pool.query(
-    `SELECT e.event_id, e.occurred_at, e.received_at, e.clock_suspect, e.status,
+    `SELECT e.event_id, e.occurred_at, e.received_at, e.processed_at,
+            e.clock_suspect, e.status, e.derived_data,
             e.temperature_c, e.humidity_rh, r.storage_path, r.media_type, r.byte_size,
             r.sha256
        FROM monitoring_events e
@@ -391,7 +387,9 @@ async function getEvent(request, response, sourceId, eventId) {
     status: event.status,
     occurred_at: mysqlToIso(event.occurred_at),
     received_at: mysqlToIso(event.received_at),
+    processed_at: event.processed_at ? mysqlToIso(event.processed_at) : null,
     clock_suspect: Boolean(event.clock_suspect),
+    derived_data: event.derived_data,
     temperature_c: event.temperature_c,
     humidity_rh: event.humidity_rh,
     raw_file: {
