@@ -29,7 +29,8 @@ create_source() {
 source_body="$(create_source "smoke-real" false)"
 source_id="$(node -e 'const fs=require("fs"); process.stdout.write(JSON.parse(fs.readFileSync(0)).source_id)' <<<"$source_body")"
 old_key="$(node -e 'const fs=require("fs"); process.stdout.write(JSON.parse(fs.readFileSync(0)).api_key)' <<<"$source_body")"
-create_source "smoke-test" true >/dev/null
+test_source_body="$(create_source "smoke-test" true)"
+test_source_id="$(node -e 'const fs=require("fs"); process.stdout.write(JSON.parse(fs.readFileSync(0)).source_id)' <<<"$test_source_body")"
 
 rotate_body="$(
   curl --silent --show-error --fail --insecure \
@@ -65,7 +66,24 @@ producer_id="$(node -e 'const fs=require("fs"); process.stdout.write(JSON.parse(
 curl --silent --show-error --fail --insecure \
   -H "Cookie: $cookie_header" -H "X-CSRF-Token: $csrf_token" \
   -H 'content-type: application/json' \
-  -d "{\"source_id\":\"$source_id\"}" \
+  -d "{\"source_id\":\"$test_source_id\"}" \
   "$base_url/api/v1/admin/producers/$producer_id/sources" >/dev/null
+
+producer_cookie="$(mktemp)"
+producer_login_body="$(mktemp)"
+trap 'rm -f "$cookie_file" "$login_body" "$response_body" "$producer_cookie" "$producer_login_body"' EXIT
+curl --silent --show-error --fail --insecure \
+  -c "$producer_cookie" -o "$producer_login_body" \
+  -H 'content-type: application/json' \
+  -d '{"username":"smoke-producer","password":"not-returned"}' \
+  "$base_url/api/v1/producer/login"
+producer_cookie_header="$(awk '$6 == "chromat_producer" { print $6 "=" $7 }' "$producer_cookie")"
+producer_sources="$(
+  curl --silent --show-error --fail --insecure \
+    -H "Cookie: $producer_cookie_header" \
+    "$base_url/api/v1/producer/sources"
+)"
+grep -q "$test_source_id" <<<"$producer_sources"
+! grep -q "$source_id" <<<"$producer_sources"
 
 printf 'PASS: monitoring source management contract\n'

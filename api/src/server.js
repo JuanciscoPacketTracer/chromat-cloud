@@ -261,27 +261,45 @@ async function adminCreateSource(request, response) {
   }
   const sourceId = crypto.randomUUID();
   const key = createSourceKey();
-  await pool.query(
-    `INSERT INTO monitoring_sources
-      (source_id, name, api_key_prefix, api_key_hash, crop, is_test,
-       alert_chat_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3))`,
-    [
-      sourceId,
-      body.name,
-      key.prefix,
-      key.hash,
-      body.crop,
-      body.is_test,
-      body.chat_id ?? null,
-    ],
-  );
-  await pool.query(
-    `INSERT INTO monitoring_source_keys
-      (key_id, source_id, api_key_prefix, api_key_hash, created_at)
-     VALUES (?, ?, ?, ?, UTC_TIMESTAMP(3))`,
-    [crypto.randomUUID(), sourceId, key.prefix, key.hash],
-  );
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    await connection.query(
+      `INSERT INTO monitoring_sources
+        (source_id, name, api_key_prefix, api_key_hash, crop, is_test,
+         alert_chat_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3))`,
+      [
+        sourceId,
+        body.name,
+        key.prefix,
+        key.hash,
+        body.crop,
+        body.is_test,
+        body.chat_id ?? null,
+      ],
+    );
+    await connection.query(
+      `INSERT INTO monitoring_source_keys
+        (key_id, source_id, api_key_prefix, api_key_hash, created_at)
+       VALUES (?, ?, ?, ?, UTC_TIMESTAMP(3))`,
+      [crypto.randomUUID(), sourceId, key.prefix, key.hash],
+    );
+    if (body.chat_id) {
+      await connection.query(
+        `INSERT INTO monitoring_source_alerts
+          (source_id, crop, chat_id, created_at)
+         VALUES (?, ?, ?, UTC_TIMESTAMP(3))`,
+        [sourceId, body.crop, body.chat_id],
+      );
+    }
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
   await audit("source_created", request, session.operator_id, {
     source_id: sourceId,
     is_test: body.is_test,
@@ -443,6 +461,83 @@ async function adminAssignProducer(request, response, producerId) {
     source_id: body.source_id,
   });
   sendJson(response, 201, { producer_id: producerId, source_id: body.source_id, permission: "read" });
+}
+
+async function authenticateProducer(request, response) {
+  const token = parseCookies(request).chromat_producer;
+  if (!token) {
+    errorResponse(response, 401, "unauthorized", "Producer session required");
+    return null;
+  }
+  const [rows] = await pool.query(
+    `SELECT s.session_id, s.producer_id
+       FROM producer_sessions s
+       JOIN producer_accounts p ON p.producer_id = s.producer_id
+      WHERE s.token_hash = ? AND s.revoked_at IS NULL
+        AND s.expires_at > UTC_TIMESTAMP(3) AND p.status = 'active'
+      LIMIT 1`,
+    [crypto.createHash("sha256").update(token).digest()],
+  );
+  if (rows.length === 0) {
+    errorResponse(response, 401, "unauthorized", "Producer session required");
+    return null;
+  }
+  return rows[0];
+}
+
+async function producerLogin(request, response) {
+  let credentials;
+  try {
+    credentials = await parseJsonBody(request);
+  } catch (error) {
+    errorResponse(response, error.statusCode ?? 400, error.message, "Invalid login request");
+    return;
+  }
+  const [rows] = await pool.query(
+    "SELECT producer_id, username, password_hash FROM producer_accounts WHERE username = ? AND status = 'active' LIMIT 1",
+    [credentials.username],
+  );
+  const producer = rows[0];
+  if (!producer || !(await argon2.verify(producer.password_hash, credentials.password ?? ""))) {
+    errorResponse(response, 401, "unauthorized", "Invalid credentials");
+    return;
+  }
+  const token = crypto.randomBytes(32).toString("base64url");
+  await pool.query(
+    `INSERT INTO producer_sessions
+      (session_id, producer_id, token_hash, expires_at, created_at)
+     VALUES (?, ?, ?, DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 8 HOUR), UTC_TIMESTAMP(3))`,
+    [
+      crypto.randomUUID(),
+      producer.producer_id,
+      crypto.createHash("sha256").update(token).digest(),
+    ],
+  );
+  sendJson(response, 200, { producer: { username: producer.username } }, {
+    "set-cookie": `chromat_producer=${token}; Max-Age=28800; Path=/api/v1/producer; Secure; HttpOnly; SameSite=Strict`,
+  });
+}
+
+async function producerSources(request, response) {
+  const session = await authenticateProducer(request, response);
+  if (!session) return;
+  const [rows] = await pool.query(
+    `SELECT s.source_id, s.name, s.crop, s.is_test, s.status
+       FROM producer_source_assignments a
+       JOIN monitoring_sources s ON s.source_id = a.source_id
+      WHERE a.producer_id = ? AND s.status = 'active'
+      ORDER BY s.name`,
+    [session.producer_id],
+  );
+  sendJson(response, 200, {
+    sources: rows.map((row) => ({
+      source_id: row.source_id,
+      name: row.name,
+      crop: row.crop,
+      is_test: Boolean(row.is_test),
+      status: row.status,
+    })),
+  });
 }
 
 function parseBearerToken(request) {
@@ -916,6 +1011,46 @@ const server = http.createServer(async (request, response) => {
       await adminCreateProducer(request, response);
       return;
     }
+    if (request.method === "POST" && parsedUrl.pathname === "/api/v1/producer/login") {
+      await producerLogin(request, response);
+      return;
+    }
+    if (request.method === "GET" && parsedUrl.pathname === "/api/v1/producer/sources") {
+      await producerSources(request, response);
+      return;
+    }
+    const producerEventMatch = parsedUrl.pathname.match(
+      /^\/api\/v1\/producer\/sources\/([0-9a-f-]{36})\/events\/([0-9a-f-]{36})$/,
+    );
+    if (
+      request.method === "GET" &&
+      producerEventMatch &&
+      isUuidV4(producerEventMatch[1]) &&
+      isUuidV4(producerEventMatch[2])
+    ) {
+      const session = await authenticateProducer(request, response);
+      if (!session) return;
+      const [assignment] = await pool.query(
+        `SELECT 1 FROM producer_source_assignments
+          WHERE producer_id = ? AND source_id = ? AND permission = 'read'`,
+        [session.producer_id, producerEventMatch[1].toLowerCase()],
+      );
+      if (assignment.length !== 1) {
+        await audit("producer_access_denied", request, null, {
+          source_id: producerEventMatch[1].toLowerCase(),
+          event_id: producerEventMatch[2].toLowerCase(),
+        });
+        errorResponse(response, 404, "not_found", "Event not found");
+        return;
+      }
+      await getEvent(
+        request,
+        response,
+        producerEventMatch[1].toLowerCase(),
+        producerEventMatch[2].toLowerCase(),
+      );
+      return;
+    }
     const producerAssignmentMatch = parsedUrl.pathname.match(
       /^\/api\/v1\/admin\/producers\/([0-9a-f-]{36})\/sources$/,
     );
@@ -946,7 +1081,13 @@ const server = http.createServer(async (request, response) => {
     }
   } catch (error) {
     console.error(JSON.stringify({ event: "request_failed", error: error.message }));
-    errorResponse(response, 503, "not_ready", "Service is not ready");
+    const statusCode = error.statusCode ?? (error.code === "ER_DUP_ENTRY" ? 409 : 503);
+    errorResponse(
+      response,
+      statusCode,
+      statusCode === 503 ? "not_ready" : error.message,
+      statusCode === 503 ? "Service is not ready" : "Invalid request",
+    );
   }
 });
 
