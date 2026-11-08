@@ -6,6 +6,10 @@ import { mysqlToIso, toMysqlTimestamp } from "./time.js";
 
 const leaseSeconds = Number.parseInt(process.env.WORKER_LEASE_SECONDS ?? "30", 10);
 const pollMs = Number.parseInt(process.env.WORKER_POLL_MS ?? "1000", 10);
+const processingDelayMs = Number.parseInt(
+  process.env.WORKER_PROCESSING_DELAY_MS ?? "0",
+  10,
+);
 const workerId = `${process.env.HOSTNAME ?? "worker"}-${crypto.randomUUID()}`;
 const rawRoot = process.env.RAW_DATA_DIR ?? "/app/uploads";
 const pool = mysql.createPool({
@@ -51,6 +55,13 @@ async function claimJob() {
     }
 
     const job = rows[0];
+    await connection.query(
+      `UPDATE analysis_runs
+          SET status = 'failed', completed_at = UTC_TIMESTAMP(3),
+              error_message = 'lease expired before completion'
+        WHERE source_id = ? AND event_id = ? AND status = 'running'`,
+      [job.source_id, job.event_id],
+    );
     const attempts = Number(job.attempts) + 1;
     await connection.query(
       `UPDATE jobs
@@ -149,7 +160,7 @@ async function failJob(job, error) {
     const exhausted = job.attempts >= 3;
     const failed = permanent || exhausted;
     const delayMinutes = job.attempts === 1 ? 1 : 5;
-    await connection.query(
+    const [update] = await connection.query(
       `UPDATE jobs
           SET state = ?, available_at = DATE_ADD(UTC_TIMESTAMP(3), INTERVAL ? MINUTE),
               lease_owner = NULL, lease_expires_at = NULL, last_error = ?,
@@ -162,6 +173,22 @@ async function failJob(job, error) {
         job.source_id,
         job.event_id,
         job.leaseOwner,
+      ],
+    );
+    if (update.affectedRows !== 1) {
+      await connection.rollback();
+      return;
+    }
+    await connection.query(
+      `INSERT INTO analysis_runs
+        (source_id, event_id, algorithm, algorithm_version, started_at,
+         completed_at, status, error_message)
+       VALUES (?, ?, 'hsv', '1', ?, UTC_TIMESTAMP(3), 'failed', ?)`,
+      [
+        job.source_id,
+        job.event_id,
+        toMysqlTimestamp(new Date()),
+        error.message.slice(0, 255),
       ],
     );
     if (failed) {
@@ -189,6 +216,7 @@ async function processJob(job) {
     })));
   }, Math.max(1000, Math.floor((leaseSeconds * 1000) / 3)));
   try {
+    if (processingDelayMs > 0) await sleep(processingDelayMs);
     const result = await classifyHsv(`${rawRoot}/${job.storage_path}`);
     await completeJob(job, result, startedAt);
   } catch (error) {

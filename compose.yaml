@@ -82,6 +82,7 @@ services:
       RAW_DATA_DIR: ${RAW_DATA_DIR}
       WORKER_LEASE_SECONDS: ${WORKER_LEASE_SECONDS}
       WORKER_POLL_MS: ${WORKER_POLL_MS}
+      WORKER_PROCESSING_DELAY_MS: ${WORKER_PROCESSING_DELAY_MS}
       TZ: ${TZ}
     volumes:
       - raw_data:/app/uploads

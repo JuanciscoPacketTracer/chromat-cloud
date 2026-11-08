@@ -373,6 +373,9 @@ async function getEvent(request, response, sourceId, eventId) {
             e.clock_suspect, e.status, e.derived_data,
             ar.run_id, ar.algorithm, ar.algorithm_version, ar.model_version,
             ar.model_sha256, ar.started_at, ar.completed_at, ar.result,
+            (SELECT COUNT(*) FROM analysis_runs ar_count
+              WHERE ar_count.source_id = e.source_id
+                AND ar_count.event_id = e.event_id) AS analysis_runs_count,
             e.temperature_c, e.humidity_rh, r.storage_path, r.media_type, r.byte_size,
             r.sha256
        FROM monitoring_events e
@@ -406,6 +409,7 @@ async function getEvent(request, response, sourceId, eventId) {
           result: event.result,
         }
       : null,
+    analysis_runs_count: Number(event.analysis_runs_count),
     temperature_c: event.temperature_c,
     humidity_rh: event.humidity_rh,
     raw_file: {

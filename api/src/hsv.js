@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import jpeg from "jpeg-js";
 import { PNG } from "pngjs";
@@ -34,11 +33,6 @@ function averageHsv(data) {
   return rgbToHsv(red / pixels, green / pixels, blue / pixels);
 }
 
-function fallbackHsv(bytes) {
-  const digest = crypto.createHash("sha256").update(bytes).digest();
-  return rgbToHsv(digest[0], digest[1], digest[2]);
-}
-
 function classify(hsv) {
   if (hsv.saturation < 0.2 || hsv.value < 0.15) return "uncertain";
   if (hsv.hue >= 35 && hsv.hue < 95) return "green";
@@ -56,7 +50,7 @@ export async function classifyHsv(filePath) {
       hsv = averageHsv(jpeg.decode(bytes, { useTArray: true }).data);
     }
   } catch {
-    hsv = fallbackHsv(bytes);
+    throw Object.assign(new Error("invalid_image"), { permanent: true });
   }
 
   return {
