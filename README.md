@@ -22,7 +22,7 @@ Incluye: servidor, API, clasificación de imágenes, base de datos, panel web, a
 
 No incluye: el entrenamiento de la red neuronal (se hace en otro entorno, por ejemplo Google Colab, y aquí solo se usa el modelo ya entrenado), la encuesta a productores ni su análisis estadístico.
 
-## 3. Arquitectura
+## 3. Arquitectura actual
 
 ```
  Huerta                                  VM Ubuntu Server (Docker Compose)
@@ -38,93 +38,71 @@ Productor ──── navegador ────────────► │  Al
 
 | Servicio | Tecnología | Función | Expuesto fuera de la VM |
 |---|---|---|---|
-| `nginx` | Nginx | Proxy inverso; entrega el panel y enruta `/api` | Sí (80/443) |
-| `api` | Node.js | Recibe imágenes, guarda datos, llama a la inferencia, genera alertas | No |
-| `inference` | Python | Clasifica la madurez (reglas de color HSV y red neuronal CNN) | No |
-| `db` | MariaDB | Resultados, metadatos y lecturas de temperatura y humedad | No |
-| `web` | HTML/JS | Panel para consultar estado e historial | Vía Nginx |
+| `nginx` | Nginx | TLS, panel y proxy `/api` | Sí, solo 443 |
+| `api` | Node.js 26 | Ingesta, autenticación, panel y administración | No |
+| `worker` | Node.js 26 | Jobs, inferencia, agregación y alertas | No |
+| `telegram-worker` | Node.js 26 | Entrega Telegram con leases y reintentos | No |
+| `inference` | Python 3.13 | Clasificación HSV/CNN determinista | No |
+| `db` | MariaDB 11.8 | Metadatos, jobs, resultados y auditoría | No |
 
-**Decisión de seguridad:** solo Nginx publica puertos. La API, la inferencia y la base de datos se comunican por la red interna de Docker Compose.
+**Decisión de seguridad:** solo Nginx publica TCP/443. API, workers, inferencia y MariaDB permanecen en la red interna de Compose.
 
-**Decisión de diseño:** la API se publica bajo `/api/v1/...` para que la futura app móvil use los mismos endpoints que el panel web.
+**Decisión de diseño:** la API recibe `POST /api/v1/events` como multipart JSON más JPEG/PNG. La identidad de la fuente se deriva de su API key.
 
 ## 4. Flujo de datos
 
 1. La Raspberry Pi captura una imagen y lee temperatura y humedad.
-2. Envía la imagen y los datos a `POST /api/v1/images`. Si no hay red, los guarda localmente y los reenvía después.
-3. La API guarda la imagen en disco y sus metadatos en MariaDB.
-4. La API pide la clasificación al servicio de inferencia y guarda la etapa de maduración resultante.
-5. Si la etapa corresponde a "maduro", se genera una alerta.
-6. El productor ve el estado y el historial en el panel web.
+2. Envía la imagen y los datos a `POST /api/v1/events`.
+3. La API guarda el Evento de monitoreo, el Dato crudo y un único job antes de responder `202`.
+4. El worker procesa el job, conserva ejecuciones versionadas y actualiza el resultado oficial.
+5. El estado agregado genera una alerta deduplicada al entrar en `maduro`; Telegram la entrega con leases y reintentos.
+6. El productor consulta únicamente sus fuentes desde el panel de solo lectura.
 
-## 5. Estructura de archivos y carpetas
+## 5. Inicio local
 
 ```
-chromat server/
-├── README.md                  # Este documento
-├── docker-compose.yml         # Orquesta todos los servicios
-├── .env.example               # Plantilla de variables de entorno (sin secretos)
-├── .gitignoresdddc
-├── docs/                      # Documentación
-│   ├── etapa-1-preparar-servidor.md
-│   └── diagramas/             # Arquitectura, UML, despliegue (para el Capítulo IV)
-│
-├── nginx/                     # Proxy inverso
-│   └── conf.d/                # default.conf
-│
-├── api/                       # Servidor Node.js
-│   ├── Dockerfile
-│   ├── package.json
-│   ├── src/
-│   │   ├── index.js           # Punto de entrada
-│   │   ├── config/            # Variables de entorno y configuración
-│   │   ├── routes/            # /api/v1/images, /readings, /health
-│   │   ├── controllers/       # Lógica de cada endpoint
-│   │   ├── services/          # Cliente de inferencia, alertas
-│   │   ├── middlewares/       # Autenticación por clave, subida de archivos
-│   │   └── db/                # Conexión y consultas a MariaDB
-│   └── tests/
-│
-├── inference/                 # Servicio de clasificación (Python)
-│   ├── Dockerfile
-│   ├── requirements.txt
-│   ├── app/                   # Servicio web y clasificadores (HSV, CNN)
-│   └── models/                # Modelo CNN ya entrenado (no se sube a Git)
-│
-├── db/
-│   └── init/                  # Scripts SQL de inicialización (esquema)
-│
-├── web/                       # Panel web
-│   └── public/
-│
-├── edge/                      # Código de la Raspberry Pi
-│   └── systemd/               # Servicio para que la captura arranque sola
-│
-├── scripts/                   # Respaldos, restauración y verificación de salud
-│
-├── uploads/                   # Imágenes recibidas (volumen, no se sube a Git)
-└── backups/                   # Respaldos de la base de datos (no se sube a Git)
+cp .env.example .env
+mkdir -p secrets
+printf '%s\n' 'replace-with-a-development-token' > secrets/telegram_bot_token
+bash scripts/dev-tls.sh
+docker compose up --build -d
 ```
 
-> Más adelante se puede agregar una carpeta `mobile/` para la aplicación móvil.
+Los certificados generados por `scripts/dev-tls.sh` son locales y no deben
+usarse como materiales de producción. El único puerto publicado por Compose es
+TCP/443; API, workers, inferencia y MariaDB permanecen internos.
 
-## 6. Plan de trabajo
+Para smoke tests con TLS verificado, exporta `CA_CERT=$PWD/certs/dev/ca.crt` y
+configura las credenciales del operador y de la Fuente de monitoreo dedicada.
+El worker Telegram usa el archivo externo indicado por
+`TELEGRAM_BOT_TOKEN_HOST_FILE`.
 
-| Etapa | Contenido | Estado |
-|---|---|---|
-| 1 | Preparar el servidor: requisitos, instalación base, red, seguridad y Docker ([guía](docs/etapa-1-preparar-servidor.md)) | En curso |
-| 2 | Esqueleto de servicios con `docker-compose.yml` (Nginx, API, inferencia, MariaDB) | Pendiente |
-| 3 | API y base de datos: subida de imágenes, esquema de tablas, pruebas con la Raspberry Pi | Pendiente |
-| 4 | Inferencia: clasificador HSV y luego modelo CNN | Pendiente |
-| 5 | Panel web y alertas | Pendiente |
-| 6 | Operación: respaldos, monitoreo, pruebas de carga y documentación | Pendiente |
+## 6. Operación y validación
+
+Las pruebas unitarias de la API se ejecutan desde `api/`:
+
+```bash
+cd api
+npm test
+```
+
+La suite de smoke tests requiere un despliegue iniciado y una CA confiable:
+
+```bash
+CA_CERT="$PWD/certs/dev/ca.crt" \
+SMOKE_TESTS=all \
+tests/smoke/run.sh
+```
+
+Los backups se generan con `scripts/backup.sh` y se validan en aislamiento con
+`scripts/verify-backup.sh`. Las migraciones son numeradas y forward-only.
 
 ## 7. Convenciones
 
-- **Secretos:** contraseñas y claves van en `.env`, que nunca se sube a Git. Solo se versiona `.env.example`.
-- **API:** rutas versionadas (`/api/v1/...`), respuestas en JSON, errores con código HTTP adecuado.
+- **Secretos:** contraseñas, tokens, claves TLS privadas y claves de backup quedan fuera de Git. Solo se versiona `.env.example`.
+- **API:** rutas versionadas (`/api/v1/...`), respuestas JSON y errores con código HTTP adecuado.
 - **Commits:** mensajes cortos en español, en infinitivo (por ejemplo, `Agregar endpoint de subida de imágenes`).
-- **Datos:** `uploads/`, `backups/` y los modelos entrenados quedan fuera de Git.
+- **Datos:** los volúmenes de crudos, base de datos y backups no se publican por Nginx.
 
 ## 8. Relación con el proyecto de investigación
 
