@@ -62,7 +62,7 @@ Productor ──── navegador ────────────► │  Al
 
 ```
 cp .env.example .env
-export CHROMAT_VM_IP=127.0.0.1
+export CHROMAT_VM_IP=192.0.2.10 # replace with the VM address
 mkdir -p secrets
 printf '%s\n' 'replace-with-a-development-token' > secrets/telegram_bot_token
 bash scripts/dev-tls.sh
@@ -74,9 +74,10 @@ usarse como materiales de producción. El único puerto publicado por Compose es
 TCP/443; API, workers, inferencia y MariaDB permanecen internos.
 
 Para smoke tests con TLS verificado, exporta `CA_CERT=$PWD/certs/dev/ca.crt` y
-configura `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `SMOKE_SOURCE_ID`,
-`SMOKE_SOURCE_API_KEY` y `FOREIGN_EVENT_ID` para la Fuente de monitoreo
-dedicada.
+configura `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `SMOKE_SOURCE_ID` y
+`SMOKE_SOURCE_API_KEY` para la Fuente de monitoreo dedicada. Configura
+`FOREIGN_EVENT_ID` con un evento perteneciente a otra Fuente de monitoreo para
+probar el aislamiento entre fuentes.
 El worker Telegram usa el archivo externo indicado por
 `TELEGRAM_BOT_TOKEN_HOST_FILE`.
 
