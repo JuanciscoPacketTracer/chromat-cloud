@@ -46,8 +46,10 @@ for attempt in $(seq 1 60); do
   sleep 1
 done
 
+sed -E 's/^USE .+;$/USE `chromat_restore`;/' \
+  "${BACKUP_DIR}/database.sql" >"${VERIFY_DIR}/database.sql"
 docker exec -i "${RESTORE_CONTAINER}" mariadb \
-  -uroot -prestore-verification chromat_restore <"${BACKUP_DIR}/database.sql"
+  -uroot -prestore-verification chromat_restore <"${VERIFY_DIR}/database.sql"
 
 while IFS= read -r migration; do
   version="${migration%%_*}"
