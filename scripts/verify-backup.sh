@@ -11,6 +11,8 @@ VERIFY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/chromat-restore-check.XXXXXX")"
 RESTORE_CONTAINER="chromat-restore-check-${RANDOM}-${RANDOM}"
 RESTORE_IMAGE="${RESTORE_IMAGE:-mariadb:11.8.2}"
 AGE_IDENTITY_FILE="${BACKUP_AGE_IDENTITY_FILE:-}"
+ENCRYPTED_BACKUP=0
+[[ -f "${BACKUP_DIR}/raw.tar.gz.age" ]] && ENCRYPTED_BACKUP=1
 cleanup() {
   docker rm -f "${RESTORE_CONTAINER}" >/dev/null 2>&1 || true
   rm -rf -- "${VERIFY_DIR}"
@@ -32,8 +34,12 @@ trap cleanup EXIT
     age -d -i "${AGE_IDENTITY_FILE}" -o "${VERIFY_DIR}/raw.tar.gz" raw.tar.gz.age
     age -d -i "${AGE_IDENTITY_FILE}" -o "${VERIFY_DIR}/raw-manifest.tsv" raw-manifest.tsv.age
     age -d -i "${AGE_IDENTITY_FILE}" -o "${VERIFY_DIR}/configuration.tar.gz" configuration.tar.gz.age
+    if [[ -f secrets.tar.gz.age ]]; then
+      age -d -i "${AGE_IDENTITY_FILE}" -o "${VERIFY_DIR}/secrets.tar.gz" secrets.tar.gz.age
+    fi
   else
     cp -- database.sql raw.tar.gz raw-manifest.tsv configuration.tar.gz "${VERIFY_DIR}/"
+    [[ -f secrets.tar.gz ]] && cp -- secrets.tar.gz "${VERIFY_DIR}/"
   fi
   gzip -t "${VERIFY_DIR}/raw.tar.gz"
   mkdir -p "${VERIFY_DIR}/raw"
@@ -42,6 +48,9 @@ trap cleanup EXIT
   test -s "${VERIFY_DIR}/database.sql"
   test -s "${VERIFY_DIR}/raw-manifest.tsv"
   test -s "${VERIFY_DIR}/configuration.tar.gz"
+  if (( ENCRYPTED_BACKUP )) && [[ -f secrets.tar.gz.age ]]; then
+    test -s "${VERIFY_DIR}/secrets.tar.gz"
+  fi
 )
 
 mkdir -p "${VERIFY_DIR}/configuration"
