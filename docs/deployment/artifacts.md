@@ -57,6 +57,8 @@ usa `production.env`. La clave privada de la CA nunca forma parte del paquete.
 
 El modelo se monta desde `model/deterministic-model.json` como archivo de solo
 lectura; no depende de una copia distinta embebida en la imagen.
+La instalación y renovación de `server.crt`, `server.key` y `ca.crt` están
+documentadas en [`tls.md`](tls.md).
 
 ## Rollback compatible
 

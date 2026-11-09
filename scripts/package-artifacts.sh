@@ -99,6 +99,8 @@ cp -R -- web/public "$package_dir/web/"
     -e "s#^CHROMAT_DB_IMAGE=.*#CHROMAT_DB_IMAGE=$db_source_image#" \
     -e "s#^CHROMAT_NGINX_IMAGE=.*#CHROMAT_NGINX_IMAGE=$nginx_source_image#" \
     -e 's#^MODEL_HOST_PATH=.*#MODEL_HOST_PATH=./model/deterministic-model.json#' \
+    -e 's#^TLS_CERT_HOST_PATH=.*#TLS_CERT_HOST_PATH=/srv/chromat/tls/server.crt#' \
+    -e 's#^TLS_KEY_HOST_PATH=.*#TLS_KEY_HOST_PATH=/srv/chromat/tls/server.key#' \
     .env.example
   printf 'TELEGRAM_BOT_TOKEN_HOST_FILE=/etc/chromat/secrets/telegram_bot_token\n'
 } >"$package_dir/production.env.example"
