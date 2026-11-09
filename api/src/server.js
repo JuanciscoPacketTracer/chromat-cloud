@@ -158,6 +158,50 @@ async function listSourceState(response, sourceId) {
   });
 }
 
+async function listSourceStateHistory(response, sourceId, crop, limit) {
+  const values = [sourceId];
+  const filters = ["source_id = ?"];
+  if (crop) {
+    filters.push("crop = ?");
+    values.push(crop);
+  }
+  values.push(limit);
+  const [rows] = await pool.query(
+    `SELECT history_id, source_id, crop, event_id, occurred_at,
+            classification, confidence, consecutive_stage, consecutive_count,
+            current_stage, episode_seq, transition, created_at
+       FROM monitoring_state_history
+      WHERE ${filters.join(" AND ")}
+      ORDER BY occurred_at DESC, history_id DESC
+      LIMIT ?`,
+    values,
+  );
+  sendJson(response, 200, {
+    history: rows.map((entry) => ({
+      history_id: Number(entry.history_id),
+      source_id: entry.source_id,
+      crop: entry.crop,
+      event_id: entry.event_id,
+      occurred_at: mysqlToIso(entry.occurred_at),
+      classification: entry.classification,
+      confidence: Number(entry.confidence),
+      consecutive_stage: entry.consecutive_stage,
+      consecutive_count: Number(entry.consecutive_count),
+      current_stage: entry.current_stage,
+      episode_seq: Number(entry.episode_seq),
+      transition: typeof entry.transition === "string"
+        ? JSON.parse(entry.transition)
+        : entry.transition,
+      created_at: mysqlToIso(entry.created_at),
+    })),
+  });
+}
+
+function parseHistoryLimit(parsedUrl) {
+  const rawLimit = Number.parseInt(parsedUrl.searchParams.get("limit") ?? "100", 10);
+  return Number.isInteger(rawLimit) ? Math.min(Math.max(rawLimit, 1), 100) : 100;
+}
+
 async function adminListSourceState(request, response, sourceId) {
   const session = await authenticateAdmin(request, response);
   if (!session) return;
@@ -170,6 +214,25 @@ async function adminListSourceState(request, response, sourceId) {
     return;
   }
   await listSourceState(response, sourceId);
+}
+
+async function adminListSourceStateHistory(request, response, sourceId, parsedUrl) {
+  const session = await authenticateAdmin(request, response);
+  if (!session) return;
+  const [sources] = await pool.query(
+    "SELECT 1 FROM monitoring_sources WHERE source_id = ? LIMIT 1",
+    [sourceId],
+  );
+  if (sources.length !== 1) {
+    errorResponse(response, 404, "not_found", "Source not found");
+    return;
+  }
+  await listSourceStateHistory(
+    response,
+    sourceId,
+    parsedUrl.searchParams.get("crop"),
+    parseHistoryLimit(parsedUrl),
+  );
 }
 
 async function audit(action, request, operatorId = null, metadata = null) {
@@ -632,6 +695,7 @@ async function adminCleanupTestSource(request, response, sourceId) {
     }
     await connection.query("DELETE FROM monitoring_source_alerts WHERE source_id = ?", [sourceId]);
     await connection.query("DELETE FROM monitoring_states WHERE source_id = ?", [sourceId]);
+    await connection.query("DELETE FROM monitoring_state_history WHERE source_id = ?", [sourceId]);
     await connection.query("DELETE FROM analysis_runs WHERE source_id = ?", [sourceId]);
     await connection.query("DELETE FROM jobs WHERE source_id = ?", [sourceId]);
     await connection.query("DELETE FROM raw_files WHERE source_id = ?", [sourceId]);
@@ -1324,6 +1388,22 @@ const server = http.createServer(async (request, response) => {
       await adminListSources(request, response);
       return;
     }
+    const adminSourceHistoryMatch = parsedUrl.pathname.match(
+      /^\/api\/v1\/admin\/sources\/([0-9a-f-]{36})\/state\/history$/i,
+    );
+    if (
+      request.method === "GET" &&
+      adminSourceHistoryMatch &&
+      isUuidV4(adminSourceHistoryMatch[1])
+    ) {
+      await adminListSourceStateHistory(
+        request,
+        response,
+        adminSourceHistoryMatch[1].toLowerCase(),
+        parsedUrl,
+      );
+      return;
+    }
     const adminSourceStateMatch = parsedUrl.pathname.match(
       /^\/api\/v1\/admin\/sources\/([0-9a-f-]{36})\/state$/i,
     );
@@ -1420,6 +1500,34 @@ const server = http.createServer(async (request, response) => {
         return;
       }
       await listSourceState(response, sourceId);
+      return;
+    }
+    const producerSourceHistoryMatch = parsedUrl.pathname.match(
+      /^\/api\/v1\/producer\/sources\/([0-9a-f-]{36})\/state\/history$/i,
+    );
+    if (
+      request.method === "GET" &&
+      producerSourceHistoryMatch &&
+      isUuidV4(producerSourceHistoryMatch[1])
+    ) {
+      const session = await authenticateProducer(request, response);
+      if (!session) return;
+      const sourceId = producerSourceHistoryMatch[1].toLowerCase();
+      const [assignment] = await pool.query(
+        `SELECT 1 FROM producer_source_assignments
+          WHERE producer_id = ? AND source_id = ? AND permission = 'read'`,
+        [session.producer_id, sourceId],
+      );
+      if (assignment.length !== 1) {
+        errorResponse(response, 404, "not_found", "Source not found");
+        return;
+      }
+      await listSourceStateHistory(
+        response,
+        sourceId,
+        parsedUrl.searchParams.get("crop"),
+        parseHistoryLimit(parsedUrl),
+      );
       return;
     }
     const producerSourceEventsMatch = parsedUrl.pathname.match(

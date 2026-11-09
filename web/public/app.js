@@ -89,6 +89,31 @@ function renderState(states) {
   $("#state-panel").hidden = false;
 }
 
+function renderStateHistory(history) {
+  const container = $("#state-history");
+  if (history.length === 0) {
+    container.textContent = "Todavía no hay observaciones aceptadas.";
+    return;
+  }
+  const table = document.createElement("table");
+  table.innerHTML = "<thead><tr><th>Momento</th><th>Clasificación</th><th>Confianza</th><th>Consecutividad</th><th>Transición</th></tr></thead>";
+  const body = document.createElement("tbody");
+  for (const entry of history) {
+    const row = document.createElement("tr");
+    row.innerHTML = "<td></td><td></td><td></td><td></td><td></td>";
+    row.children[0].textContent = entry.occurred_at;
+    row.children[1].textContent = entry.classification;
+    row.children[2].textContent = String(entry.confidence);
+    row.children[3].textContent = `${entry.consecutive_stage} (${entry.consecutive_count})`;
+    row.children[4].textContent = entry.transition
+      ? `${entry.transition.fromStage ?? "-"} → ${entry.transition.toStage}`
+      : "-";
+    body.append(row);
+  }
+  table.append(body);
+  container.replaceChildren(table);
+}
+
 async function loadSources() {
   const path = state.role === "operator"
     ? "/api/v1/admin/sources"
@@ -106,8 +131,13 @@ async function loadEvents(source) {
   const statePath = state.role === "operator"
     ? `/api/v1/admin/sources/${source.source_id}/state`
     : `/api/v1/producer/sources/${source.source_id}/state`;
+  const historyPath = state.role === "operator"
+    ? `/api/v1/admin/sources/${source.source_id}/state/history`
+    : `/api/v1/producer/sources/${source.source_id}/state/history`;
   const stateBody = await request(statePath, { headers: {} });
+  const historyBody = await request(historyPath, { headers: {} });
   renderState(stateBody.states);
+  renderStateHistory(historyBody.history);
   $("#events-panel").hidden = false;
   renderEvents(body.events);
 }

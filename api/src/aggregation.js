@@ -43,11 +43,25 @@ export function applyObservation(state = {}, observation, config = {}) {
     lastOccurredAt: observation.occurredAt,
     lastConfidence: observation.confidence,
   };
+  const historyEntry = {
+    classification: candidateStage,
+    confidence: observation.confidence,
+    occurredAt: observation.occurredAt,
+    consecutiveStage,
+    consecutiveCount,
+    currentStage: state.currentStage ?? null,
+    episodeSeq: state.episodeSeq ?? 0,
+    transition: null,
+  };
   if (
     consecutiveCount < consecutiveEvents ||
     state.currentStage === candidateStage
   ) {
-    return { accepted: true, state: nextState, transition: null };
+    return {
+      accepted: true,
+      state: { ...nextState, historyEntry },
+      transition: null,
+    };
   }
 
   const transition = {
@@ -55,12 +69,19 @@ export function applyObservation(state = {}, observation, config = {}) {
     toStage: candidateStage,
     episodeSeq: (state.episodeSeq ?? 0) + 1,
   };
+  const transitionedHistoryEntry = {
+    ...historyEntry,
+    currentStage: candidateStage,
+    episodeSeq: transition.episodeSeq,
+    transition,
+  };
   return {
     accepted: true,
     state: {
       ...nextState,
       currentStage: candidateStage,
       episodeSeq: transition.episodeSeq,
+      historyEntry: transitionedHistoryEntry,
     },
     transition,
   };

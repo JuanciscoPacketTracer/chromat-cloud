@@ -273,6 +273,27 @@ async function completeJob(job, results, startedAt) {
       aggregationConfig,
     );
     if (!result.accepted) return;
+    const historyEntry = result.state.historyEntry;
+    await connection.query(
+      `INSERT INTO monitoring_state_history
+        (source_id, crop, event_id, occurred_at, classification, confidence,
+         consecutive_stage, consecutive_count, current_stage, episode_seq,
+         transition, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3))`,
+      [
+        job.source_id,
+        event.crop,
+        job.event_id,
+        toMysqlTimestamp(new Date(historyEntry.occurredAt)),
+        historyEntry.classification,
+        historyEntry.confidence,
+        historyEntry.consecutiveStage,
+        historyEntry.consecutiveCount,
+        historyEntry.currentStage,
+        historyEntry.episodeSeq,
+        historyEntry.transition ? JSON.stringify(historyEntry.transition) : null,
+      ],
+    );
     const configurationJson = JSON.stringify(aggregationConfig);
     const [ruleRows] = await connection.query(
       `SELECT configuration

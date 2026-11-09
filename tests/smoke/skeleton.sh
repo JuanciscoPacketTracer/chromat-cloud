@@ -18,6 +18,7 @@ fail() {
 [[ -f db/migrations/002_processing.sql ]] || fail "processing migration is missing"
 [[ -f db/migrations/004_admin_auth.sql ]] || fail "admin migration is missing"
 [[ -f db/migrations/006_source_access.sql ]] || fail "source access migration is missing"
+[[ -f db/migrations/011_aggregated_state_history.sql ]] || fail "aggregated history migration is missing"
 [[ -f api/src/worker.js ]] || fail "worker is missing"
 [[ -f api/src/create-operator.js ]] || fail "operator command is missing"
 [[ -f inference/server.py ]] || fail "inference service is missing"

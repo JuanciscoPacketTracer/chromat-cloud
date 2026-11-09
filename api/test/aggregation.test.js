@@ -25,6 +25,27 @@ test("enters a stage after the configured consecutive observations", () => {
   assert.equal(result.transition.fromStage, null);
   assert.equal(result.transition.toStage, "maduro");
   assert.equal(result.state.episodeSeq, 1);
+  assert.equal(result.state.historyEntry.currentStage, "maduro");
+  assert.equal(result.state.historyEntry.episodeSeq, 1);
+});
+
+test("records each accepted observation for the aggregated history", () => {
+  const result = applyObservation({}, {
+    classification: "maduro",
+    confidence: 0.9,
+    occurredAt: "2026-11-08T19:58:00.000Z",
+  }, { ...config, consecutiveEvents: 2 });
+
+  assert.deepEqual(result.state.historyEntry, {
+    classification: "maduro",
+    confidence: 0.9,
+    occurredAt: "2026-11-08T19:58:00.000Z",
+    consecutiveStage: "maduro",
+    consecutiveCount: 1,
+    currentStage: null,
+    episodeSeq: 0,
+    transition: null,
+  });
 });
 
 test("starts a new episode after leaving and re-entering a stage", () => {
