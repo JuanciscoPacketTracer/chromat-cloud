@@ -119,3 +119,21 @@ test("suppresses a maduro alert inside the configured minimum interval", () => {
   assert.equal(result.transition.alertEligible, false);
   assert.equal(result.state.currentStage, "maduro");
 });
+
+test("does not change aggregated state during manual reprocessing", () => {
+  const state = {
+    currentStage: "verde",
+    episodeSeq: 1,
+    lastOccurredAt: "2026-11-08T19:00:00.000Z",
+  };
+  const result = applyObservation(state, {
+    classification: "maduro",
+    confidence: 0.95,
+    occurredAt: "2026-11-08T19:30:00.000Z",
+    reprocessing: true,
+  }, config);
+
+  assert.equal(result.accepted, false);
+  assert.equal(result.transition, null);
+  assert.deepEqual(result.state, state);
+});

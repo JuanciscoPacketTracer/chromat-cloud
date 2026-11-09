@@ -235,8 +235,8 @@ async function adminListSourceStateHistory(request, response, sourceId, parsedUr
   );
 }
 
-async function audit(action, request, operatorId = null, metadata = null) {
-  await pool.query(
+async function writeAudit(connection, action, request, operatorId = null, metadata = null) {
+  await connection.query(
     `INSERT INTO audit_log
       (occurred_at, action, operator_id, request_ip, metadata)
      VALUES (UTC_TIMESTAMP(3), ?, ?, ?, ?)`,
@@ -247,6 +247,10 @@ async function audit(action, request, operatorId = null, metadata = null) {
       metadata ? JSON.stringify(metadata) : null,
     ],
   );
+}
+
+async function audit(action, request, operatorId = null, metadata = null) {
+  await writeAudit(pool, action, request, operatorId, metadata);
 }
 
 function consumeLoginLimit(request) {
@@ -743,6 +747,69 @@ async function adminReemitAlert(request, response, alertId) {
     alert_id: alertId,
   });
   sendJson(response, 200, { alert_id: alertId, status: "pending" });
+}
+
+async function adminReprocessEvent(request, response, sourceId, eventId) {
+  const session = await adminSessionWithCsrf(request, response);
+  if (!session) return;
+  const body = await parseJsonBody(request);
+  const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+  if (!reason || reason.length > 500) {
+    errorResponse(response, 422, "invalid_reason", "A reason of 1..500 characters is required");
+    return;
+  }
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [rows] = await connection.query(
+      `SELECT e.status, j.state
+         FROM monitoring_events e
+         JOIN jobs j ON j.source_id = e.source_id AND j.event_id = e.event_id
+        WHERE e.source_id = ? AND e.event_id = ?
+        FOR UPDATE`,
+      [sourceId, eventId],
+    );
+    if (rows.length !== 1) {
+      await connection.rollback();
+      errorResponse(response, 404, "not_found", "Event not found");
+      return;
+    }
+    if (rows[0].state === "leased") {
+      await connection.rollback();
+      errorResponse(response, 409, "processing", "Event is currently being processed");
+      return;
+    }
+    await connection.query(
+      `UPDATE jobs
+          SET state = 'queued', attempts = 0, available_at = UTC_TIMESTAMP(3),
+              lease_owner = NULL, lease_expires_at = NULL, last_error = NULL,
+              reprocessing = TRUE, updated_at = UTC_TIMESTAMP(3)
+        WHERE source_id = ? AND event_id = ?`,
+      [sourceId, eventId],
+    );
+    await connection.query(
+      `UPDATE monitoring_events
+          SET status = 'processing'
+        WHERE source_id = ? AND event_id = ?`,
+      [sourceId, eventId],
+    );
+    await writeAudit(connection, "event_reprocessed", request, session.operator_id, {
+      source_id: sourceId,
+      event_id: eventId,
+      reason,
+    });
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+  sendJson(response, 202, {
+    source_id: sourceId,
+    event_id: eventId,
+    status: "processing",
+  });
 }
 
 async function adminRotateSourceKey(request, response, sourceId) {
@@ -1491,6 +1558,23 @@ const server = http.createServer(async (request, response) => {
         request,
         response,
         adminSourceEventsMatch[1].toLowerCase(),
+      );
+      return;
+    }
+    const adminReprocessEventMatch = parsedUrl.pathname.match(
+      /^\/api\/v1\/admin\/sources\/([0-9a-f-]{36})\/events\/([0-9a-f-]{36})\/reprocess$/i,
+    );
+    if (
+      request.method === "POST" &&
+      adminReprocessEventMatch &&
+      isUuidV4(adminReprocessEventMatch[1]) &&
+      isUuidV4(adminReprocessEventMatch[2])
+    ) {
+      await adminReprocessEvent(
+        request,
+        response,
+        adminReprocessEventMatch[1].toLowerCase(),
+        adminReprocessEventMatch[2].toLowerCase(),
       );
       return;
     }

@@ -75,7 +75,7 @@ async function claimJob() {
           AND j.lease_expires_at < UTC_TIMESTAMP(3)`,
     );
     const [rows] = await connection.query(
-      `SELECT j.source_id, j.event_id, j.attempts, r.storage_path
+      `      SELECT j.source_id, j.event_id, j.attempts, j.reprocessing, r.storage_path
          FROM jobs j
          JOIN raw_files r ON r.source_id = j.source_id AND r.event_id = j.event_id
         WHERE (j.state = 'queued' AND j.attempts < 3 AND j.available_at <= UTC_TIMESTAMP(3))
@@ -161,7 +161,8 @@ async function completeJob(job, results, startedAt) {
     await connection.beginTransaction();
     const completedAt = new Date();
     const [update] = await connection.query(
-      `UPDATE jobs SET state = 'done', lease_owner = NULL, lease_expires_at = NULL,
+      `UPDATE jobs SET state = 'done', reprocessing = FALSE,
+              lease_owner = NULL, lease_expires_at = NULL,
               updated_at = ?, last_error = NULL
         WHERE source_id = ? AND event_id = ? AND state = 'leased' AND lease_owner = ?`,
       [toMysqlTimestamp(completedAt), job.source_id, job.event_id, job.leaseOwner],
@@ -280,6 +281,7 @@ async function completeJob(job, results, startedAt) {
         clockSuspect: Boolean(event.clock_suspect),
         isTest: Boolean(event.is_test),
         official: true,
+        reprocessing: Boolean(job.reprocessing),
       },
       aggregationConfig,
     );
