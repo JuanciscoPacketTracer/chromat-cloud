@@ -61,6 +61,8 @@ La instalación y renovación de `server.crt`, `server.key` y `ca.crt` están
 documentadas en [`tls.md`](tls.md).
 La política de backups, retención y restauración aislada está en
 [`backups.md`](backups.md).
+La secuencia completa de promoción, readiness, smoke y rollback está en
+[`promotion.md`](promotion.md).
 
 ## Rollback compatible
 

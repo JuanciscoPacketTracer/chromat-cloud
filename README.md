@@ -123,6 +123,8 @@ La preparación de paquetes Fedora → Ubuntu está documentada en
 [`docs/deployment/artifacts.md`](docs/deployment/artifacts.md).
 La operación de backups cifrados, retención y restauración está documentada en
 [`docs/deployment/backups.md`](docs/deployment/backups.md).
+La promoción manual con readiness, smoke tests y rollback compatible está
+documentada en [`docs/deployment/promotion.md`](docs/deployment/promotion.md).
 
 ## 7. Convenciones
 
