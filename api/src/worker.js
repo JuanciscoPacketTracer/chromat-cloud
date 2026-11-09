@@ -30,6 +30,10 @@ const aggregationConfig = {
     process.env.AGGREGATION_MAX_EVENT_AGE_MS ?? `${7 * 24 * 60 * 60 * 1000}`,
     10,
   ),
+  minimumAlertIntervalMs: Number.parseInt(
+    process.env.AGGREGATION_MIN_ALERT_INTERVAL_MS ?? "0",
+    10,
+  ),
 };
 if (!["hsv", "cnn"].includes(officialAlgorithm)) {
   throw new Error("OFFICIAL_ALGORITHM must be hsv or cnn");
@@ -240,7 +244,7 @@ async function completeJob(job, results, startedAt) {
     const [stateRows] = await connection.query(
       `SELECT current_stage, episode_seq, consecutive_stage, consecutive_count,
               last_occurred_at, last_confidence, aggregation_rule_version,
-              aggregation_config
+              aggregation_config, last_alert_at
          FROM monitoring_states
         WHERE source_id = ? AND crop = ?
         FOR UPDATE`,
@@ -262,6 +266,9 @@ async function completeJob(job, results, startedAt) {
           aggregationConfig: typeof stateRows[0].aggregation_config === "string"
             ? JSON.parse(stateRows[0].aggregation_config)
             : stateRows[0].aggregation_config,
+          lastAlertAt: stateRows[0].last_alert_at
+            ? mysqlToIso(stateRows[0].last_alert_at)
+            : null,
         }
       : {};
     const result = applyObservation(
@@ -362,7 +369,7 @@ async function completeJob(job, results, startedAt) {
       isTest: Boolean(event.is_test),
     });
     if (alert) {
-      await connection.query(
+      const [alertInsert] = await connection.query(
         `INSERT IGNORE INTO monitoring_alerts
           (source_id, crop, event_id, from_stage, to_stage, episode_seq,
            chat_id, status, attempts, available_at, created_at)
@@ -378,6 +385,14 @@ async function completeJob(job, results, startedAt) {
           alert.chatId,
         ],
       );
+      if (alertInsert.affectedRows === 1) {
+        await connection.query(
+          `UPDATE monitoring_states
+              SET last_alert_at = UTC_TIMESTAMP(3)
+            WHERE source_id = ? AND crop = ?`,
+          [job.source_id, event.crop],
+        );
+      }
     }
   }
 }

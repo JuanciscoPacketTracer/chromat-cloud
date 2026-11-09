@@ -98,3 +98,24 @@ test("ignores suspicious, stale, and out-of-order observations", () => {
     assert.deepEqual(result.state, state);
   }
 });
+
+test("suppresses a maduro alert inside the configured minimum interval", () => {
+  const result = applyObservation({
+    currentStage: "verde",
+    episodeSeq: 1,
+    lastOccurredAt: "2026-11-08T19:00:00.000Z",
+    lastAlertAt: "2026-11-08T19:30:00.000Z",
+  }, {
+    classification: "maduro",
+    confidence: 0.9,
+    occurredAt: "2026-11-08T19:45:00.000Z",
+  }, {
+    ...config,
+    consecutiveEvents: 1,
+    minimumAlertIntervalMs: 60 * 60 * 1000,
+  });
+
+  assert.equal(result.transition.toStage, "maduro");
+  assert.equal(result.transition.alertEligible, false);
+  assert.equal(result.state.currentStage, "maduro");
+});

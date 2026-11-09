@@ -1,6 +1,7 @@
 const DEFAULT_CONFIDENCE_THRESHOLD = 0.8;
 const DEFAULT_CONSECUTIVE_EVENTS = 3;
 const DEFAULT_MAXIMUM_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const DEFAULT_MINIMUM_ALERT_INTERVAL_MS = 0;
 
 function isValidDate(value) {
   return typeof value === "string" && !Number.isNaN(Date.parse(value));
@@ -10,6 +11,8 @@ export function applyObservation(state = {}, observation, config = {}) {
   const confidenceThreshold = config.confidenceThreshold ?? DEFAULT_CONFIDENCE_THRESHOLD;
   const consecutiveEvents = config.consecutiveEvents ?? DEFAULT_CONSECUTIVE_EVENTS;
   const maximumAgeMs = config.maximumAgeMs ?? DEFAULT_MAXIMUM_AGE_MS;
+  const minimumAlertIntervalMs =
+    config.minimumAlertIntervalMs ?? DEFAULT_MINIMUM_ALERT_INTERVAL_MS;
   const now = isValidDate(config.now) ? Date.parse(config.now) : Date.now();
   const occurredAt = isValidDate(observation.occurredAt)
     ? Date.parse(observation.occurredAt)
@@ -68,6 +71,11 @@ export function applyObservation(state = {}, observation, config = {}) {
     fromStage: state.currentStage ?? null,
     toStage: candidateStage,
     episodeSeq: (state.episodeSeq ?? 0) + 1,
+    alertEligible: !(
+      candidateStage === "maduro" &&
+      isValidDate(state.lastAlertAt) &&
+      now - Date.parse(state.lastAlertAt) < minimumAlertIntervalMs
+    ),
   };
   const transitionedHistoryEntry = {
     ...historyEntry,

@@ -7,7 +7,12 @@ export function buildAlertCandidate({
   chatId,
   isTest,
 }) {
-  if (isTest || !transition || transition.toStage !== "maduro") return null;
+  if (
+    isTest ||
+    !transition ||
+    transition.toStage !== "maduro" ||
+    transition.alertEligible === false
+  ) return null;
   return {
     sourceId,
     crop,
