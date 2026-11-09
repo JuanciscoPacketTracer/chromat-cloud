@@ -125,6 +125,48 @@ async function adminListSourceEvents(request, response, sourceId) {
   await listSourceEvents(response, sourceId);
 }
 
+async function listSourceState(response, sourceId) {
+  const [rows] = await pool.query(
+    `SELECT source_id, crop, current_stage, episode_seq, consecutive_stage,
+            consecutive_count, last_occurred_at, last_confidence, updated_at
+       FROM monitoring_states
+      WHERE source_id = ?
+      ORDER BY crop`,
+    [sourceId],
+  );
+  sendJson(response, 200, {
+    states: rows.map((state) => ({
+      source_id: state.source_id,
+      crop: state.crop,
+      current_stage: state.current_stage,
+      episode_seq: Number(state.episode_seq),
+      consecutive_stage: state.consecutive_stage,
+      consecutive_count: Number(state.consecutive_count),
+      last_occurred_at: state.last_occurred_at
+        ? mysqlToIso(state.last_occurred_at)
+        : null,
+      last_confidence: state.last_confidence == null
+        ? null
+        : Number(state.last_confidence),
+      updated_at: mysqlToIso(state.updated_at),
+    })),
+  });
+}
+
+async function adminListSourceState(request, response, sourceId) {
+  const session = await authenticateAdmin(request, response);
+  if (!session) return;
+  const [sources] = await pool.query(
+    "SELECT 1 FROM monitoring_sources WHERE source_id = ? LIMIT 1",
+    [sourceId],
+  );
+  if (sources.length !== 1) {
+    errorResponse(response, 404, "not_found", "Source not found");
+    return;
+  }
+  await listSourceState(response, sourceId);
+}
+
 async function audit(action, request, operatorId = null, metadata = null) {
   await pool.query(
     `INSERT INTO audit_log
@@ -1202,6 +1244,21 @@ const server = http.createServer(async (request, response) => {
       await adminListSources(request, response);
       return;
     }
+    const adminSourceStateMatch = parsedUrl.pathname.match(
+      /^\/api\/v1\/admin\/sources\/([0-9a-f-]{36})\/state$/i,
+    );
+    if (
+      request.method === "GET" &&
+      adminSourceStateMatch &&
+      isUuidV4(adminSourceStateMatch[1])
+    ) {
+      await adminListSourceState(
+        request,
+        response,
+        adminSourceStateMatch[1].toLowerCase(),
+      );
+      return;
+    }
     const sourceAdminMatch = parsedUrl.pathname.match(
       /^\/api\/v1\/admin\/sources\/([0-9a-f-]{36})(?:\/(keys))?$/,
     );
@@ -1245,6 +1302,29 @@ const server = http.createServer(async (request, response) => {
     }
     if (request.method === "GET" && parsedUrl.pathname === "/api/v1/producer/sources") {
       await producerSources(request, response);
+      return;
+    }
+    const producerSourceStateMatch = parsedUrl.pathname.match(
+      /^\/api\/v1\/producer\/sources\/([0-9a-f-]{36})\/state$/i,
+    );
+    if (
+      request.method === "GET" &&
+      producerSourceStateMatch &&
+      isUuidV4(producerSourceStateMatch[1])
+    ) {
+      const session = await authenticateProducer(request, response);
+      if (!session) return;
+      const sourceId = producerSourceStateMatch[1].toLowerCase();
+      const [assignment] = await pool.query(
+        `SELECT 1 FROM producer_source_assignments
+          WHERE producer_id = ? AND source_id = ? AND permission = 'read'`,
+        [session.producer_id, sourceId],
+      );
+      if (assignment.length !== 1) {
+        errorResponse(response, 404, "not_found", "Source not found");
+        return;
+      }
+      await listSourceState(response, sourceId);
       return;
     }
     const producerSourceEventsMatch = parsedUrl.pathname.match(

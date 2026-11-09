@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import mysql from "mysql2/promise";
 import { classifyHsv } from "./hsv.js";
+import { applyObservation } from "./aggregation.js";
 import { migrate } from "./migrate.js";
 import { mysqlToIso, toMysqlTimestamp } from "./time.js";
 
@@ -15,6 +16,19 @@ const inferenceUrl = process.env.INFERENCE_URL ?? "http://inference:8000";
 const inferenceModelVersion = process.env.INFERENCE_MODEL_VERSION;
 const inferenceModelSha256 = process.env.INFERENCE_MODEL_SHA256;
 const officialAlgorithm = process.env.OFFICIAL_ALGORITHM;
+const aggregationConfig = {
+  confidenceThreshold: Number.parseFloat(
+    process.env.AGGREGATION_CONFIDENCE_THRESHOLD ?? "0.8",
+  ),
+  consecutiveEvents: Number.parseInt(
+    process.env.AGGREGATION_CONSECUTIVE_EVENTS ?? "3",
+    10,
+  ),
+  maximumAgeMs: Number.parseInt(
+    process.env.AGGREGATION_MAX_EVENT_AGE_MS ?? `${7 * 24 * 60 * 60 * 1000}`,
+    10,
+  ),
+};
 if (!["hsv", "cnn"].includes(officialAlgorithm)) {
   throw new Error("OFFICIAL_ALGORITHM must be hsv or cnn");
 }
@@ -192,6 +206,7 @@ async function completeJob(job, results, startedAt) {
         job.event_id,
       ],
     );
+    await updateAggregatedState(connection, job, officialResult);
     await connection.commit();
     console.log(JSON.stringify({
       event: "job_completed",
@@ -204,6 +219,80 @@ async function completeJob(job, results, startedAt) {
     throw error;
   } finally {
     connection.release();
+  }
+
+  async function updateAggregatedState(connection, job, officialResult) {
+    const [eventRows] = await connection.query(
+      `SELECT e.occurred_at, e.clock_suspect, e.crop, s.is_test
+         FROM monitoring_events e
+         JOIN monitoring_sources s ON s.source_id = e.source_id
+        WHERE e.source_id = ? AND e.event_id = ?
+        FOR UPDATE`,
+      [job.source_id, job.event_id],
+    );
+    const event = eventRows[0];
+    if (!event) throw new Error("event_missing_for_aggregation");
+    const [stateRows] = await connection.query(
+      `SELECT current_stage, episode_seq, consecutive_stage, consecutive_count,
+              last_occurred_at, last_confidence
+         FROM monitoring_states
+        WHERE source_id = ? AND crop = ?
+        FOR UPDATE`,
+      [job.source_id, event.crop],
+    );
+    const state = stateRows[0]
+      ? {
+          currentStage: stateRows[0].current_stage,
+          episodeSeq: Number(stateRows[0].episode_seq),
+          consecutiveStage: stateRows[0].consecutive_stage,
+          consecutiveCount: Number(stateRows[0].consecutive_count),
+          lastOccurredAt: stateRows[0].last_occurred_at
+            ? mysqlToIso(stateRows[0].last_occurred_at)
+            : null,
+          lastConfidence: stateRows[0].last_confidence == null
+            ? null
+            : Number(stateRows[0].last_confidence),
+        }
+      : {};
+    const result = applyObservation(
+      state,
+      {
+        classification: officialResult.classification,
+        confidence: officialResult.confidence,
+        occurredAt: mysqlToIso(event.occurred_at),
+        clockSuspect: Boolean(event.clock_suspect),
+        isTest: Boolean(event.is_test),
+        official: true,
+      },
+      aggregationConfig,
+    );
+    if (!result.accepted) return;
+    await connection.query(
+      `INSERT INTO monitoring_states
+        (source_id, crop, current_stage, episode_seq, consecutive_stage,
+         consecutive_count, last_occurred_at, last_confidence, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3))
+       ON DUPLICATE KEY UPDATE
+         current_stage = VALUES(current_stage),
+         episode_seq = VALUES(episode_seq),
+         consecutive_stage = VALUES(consecutive_stage),
+         consecutive_count = VALUES(consecutive_count),
+         last_occurred_at = VALUES(last_occurred_at),
+         last_confidence = VALUES(last_confidence),
+         updated_at = VALUES(updated_at)`,
+      [
+        job.source_id,
+        event.crop,
+        result.state.currentStage ?? null,
+        result.state.episodeSeq ?? 0,
+        result.state.consecutiveStage ?? null,
+        result.state.consecutiveCount ?? 0,
+        result.state.lastOccurredAt
+          ? toMysqlTimestamp(new Date(result.state.lastOccurredAt))
+          : null,
+        result.state.lastConfidence ?? null,
+      ],
+    );
   }
 }
 

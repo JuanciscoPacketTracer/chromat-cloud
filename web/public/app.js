@@ -66,6 +66,29 @@ function renderEvents(events) {
   container.replaceChildren(table);
 }
 
+function renderState(states) {
+  const container = $("#state");
+  if (states.length === 0) {
+    container.textContent = "Todavía no hay observaciones elegibles para el estado agregado.";
+    return;
+  }
+  const table = document.createElement("table");
+  table.innerHTML = "<thead><tr><th>Cultivo</th><th>Etapa</th><th>Consecutividad</th><th>Episodio</th></tr></thead>";
+  const body = document.createElement("tbody");
+  for (const state of states) {
+    const row = document.createElement("tr");
+    row.innerHTML = "<td></td><td></td><td></td><td></td>";
+    row.children[0].textContent = state.crop;
+    row.children[1].textContent = state.current_stage ?? "Pendiente";
+    row.children[2].textContent = `${state.consecutive_stage ?? "-"} (${state.consecutive_count})`;
+    row.children[3].textContent = String(state.episode_seq);
+    body.append(row);
+  }
+  table.append(body);
+  container.replaceChildren(table);
+  $("#state-panel").hidden = false;
+}
+
 async function loadSources() {
   const path = state.role === "operator"
     ? "/api/v1/admin/sources"
@@ -80,6 +103,11 @@ async function loadEvents(source) {
     ? `/api/v1/admin/sources/${source.source_id}/events`
     : `/api/v1/producer/sources/${source.source_id}/events`;
   const body = await request(path, { headers: {} });
+  const statePath = state.role === "operator"
+    ? `/api/v1/admin/sources/${source.source_id}/state`
+    : `/api/v1/producer/sources/${source.source_id}/state`;
+  const stateBody = await request(statePath, { headers: {} });
+  renderState(stateBody.states);
   $("#events-panel").hidden = false;
   renderEvents(body.events);
 }

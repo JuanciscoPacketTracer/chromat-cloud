@@ -60,5 +60,6 @@ export async function classifyHsv(filePath) {
     saturation: Number(hsv.saturation.toFixed(4)),
     value: Number(hsv.value.toFixed(4)),
     classification: classify(hsv),
+    confidence: 1,
   };
 }
