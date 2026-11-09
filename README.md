@@ -83,6 +83,25 @@ El worker Telegram usa el archivo externo indicado por
 
 ## 6. Operación y validación
 
+### Estado actual
+
+La implementación local cubre ingesta idempotente, procesamiento asíncrono con
+leases y reintentos, inferencia HSV/CNN determinista, autenticación de
+operadores y fuentes, panel de productor, estado agregado, alertas Telegram,
+reprocesamiento auditable, retención, backups, logs estructurados, métricas
+administrativas y protección de capacidad.
+
+La suite API tiene 13 pruebas pasando. También pasan la validación de Compose,
+la sintaxis Bash/Python y el smoke skeleton. La validación E2E completa requiere
+un entorno Compose iniciado, credenciales de smoke y una CA confiable; el envío
+real a Telegram se valida separadamente.
+
+El despliegue reproducible Fedora → Ubuntu está chartado, pero permanece como
+trabajo abierto en los tickets Wayfinder #31–#35: paquete amd64, host Ubuntu,
+TLS de producción, backup/restore y runbook de readiness/smoke/rollback.
+CI/CD, Kubernetes, alta disponibilidad y escalado horizontal siguen fuera de
+alcance.
+
 Las pruebas unitarias de la API se ejecutan desde `api/`:
 
 ```bash
