@@ -4,6 +4,7 @@ import mysql from "mysql2/promise";
 import { classifyHsv } from "./hsv.js";
 import { applyObservation } from "./aggregation.js";
 import { buildAlertCandidate } from "./alerts.js";
+import { databaseConfig } from "./database.js";
 import { migrate } from "./migrate.js";
 import { mysqlToIso, toMysqlTimestamp } from "./time.js";
 
@@ -41,15 +42,7 @@ if (!["hsv", "cnn"].includes(officialAlgorithm)) {
 const workerId = `${process.env.HOSTNAME ?? "worker"}-${crypto.randomUUID()}`;
 const rawRoot = process.env.RAW_DATA_DIR ?? "/app/uploads";
 const maintenanceMarker = `${rawRoot}/.maintenance`;
-const pool = mysql.createPool({
-  host: process.env.DB_HOST ?? "db",
-  port: Number.parseInt(process.env.DB_PORT ?? "3306", 10),
-  database: process.env.DB_NAME ?? "chromat",
-  user: process.env.DB_USER ?? "chromat_user",
-  password: process.env.DB_PASSWORD,
-  connectionLimit: 2,
-  dateStrings: true,
-});
+const pool = mysql.createPool(databaseConfig(2));
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -78,6 +71,7 @@ async function claimJob() {
       `      SELECT j.source_id, j.event_id, j.attempts, j.reprocessing, r.storage_path
          FROM jobs j
          JOIN raw_files r ON r.source_id = j.source_id AND r.event_id = j.event_id
+            AND r.state = 'ready'
         WHERE (j.state = 'queued' AND j.attempts < 3 AND j.available_at <= UTC_TIMESTAMP(3))
            OR (j.state = 'leased' AND j.attempts < 3 AND j.lease_expires_at < UTC_TIMESTAMP(3))
         ORDER BY j.available_at, j.created_at

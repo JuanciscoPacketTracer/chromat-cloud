@@ -15,19 +15,21 @@ services:
     environment:
       MARIADB_DATABASE: ${DB_NAME}
       MARIADB_USER: ${DB_USER}
-      MARIADB_PASSWORD: ${DB_PASSWORD}
-      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+      MARIADB_PASSWORD_FILE: /run/secrets/db_password
+      MARIADB_ROOT_PASSWORD_FILE: /run/secrets/db_root_password
       TZ: ${TZ}
     volumes:
       - db_data:/var/lib/mysql
       - ./db/migrations:/docker-entrypoint-initdb.d:ro
+      - ${DB_PASSWORD_HOST_FILE}:/run/secrets/db_password:ro
+      - ${DB_ROOT_PASSWORD_HOST_FILE}:/run/secrets/db_root_password:ro
     networks:
       - internal
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          "mariadb -h 127.0.0.1 -u root -p\"$${MARIADB_ROOT_PASSWORD}\" -e \"SELECT 1 FROM schema_migrations WHERE version = '001_initial' LIMIT 1\" --skip-column-names | grep -q 1"
+          "mariadb -h 127.0.0.1 -u root -p\"$$(cat /run/secrets/db_root_password)\" -e \"SELECT 1 FROM schema_migrations WHERE version = '001_initial' LIMIT 1\" --skip-column-names | grep -q 1"
         ]
       interval: 5s
       timeout: 5s
@@ -51,7 +53,7 @@ services:
       DB_PORT: ${DB_PORT}
       DB_NAME: ${DB_NAME}
       DB_USER: ${DB_USER}
-      DB_PASSWORD: ${DB_PASSWORD}
+      DB_PASSWORD_FILE: /run/secrets/db_password
       RAW_DATA_DIR: ${RAW_DATA_DIR}
       RAW_MIN_FREE_PERCENT: ${RAW_MIN_FREE_PERCENT:-20}
       UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES}
@@ -61,6 +63,7 @@ services:
     volumes:
       - raw_data:/app/uploads
       - ./db/migrations:/app/migrations:ro
+      - ${DB_PASSWORD_HOST_FILE}:/run/secrets/db_password:ro
     networks:
       - internal
     depends_on:
@@ -96,7 +99,7 @@ services:
       DB_PORT: ${DB_PORT}
       DB_NAME: ${DB_NAME}
       DB_USER: ${DB_USER}
-      DB_PASSWORD: ${DB_PASSWORD}
+      DB_PASSWORD_FILE: /run/secrets/db_password
       RAW_DATA_DIR: ${RAW_DATA_DIR}
       WORKER_LEASE_SECONDS: ${WORKER_LEASE_SECONDS}
       WORKER_POLL_MS: ${WORKER_POLL_MS}
@@ -114,6 +117,7 @@ services:
     volumes:
       - raw_data:/app/uploads
       - ./db/migrations:/app/migrations:ro
+      - ${DB_PASSWORD_HOST_FILE}:/run/secrets/db_password:ro
     networks:
       - internal
     depends_on:
@@ -138,14 +142,16 @@ services:
       DB_PORT: ${DB_PORT}
       DB_NAME: ${DB_NAME}
       DB_USER: ${DB_USER}
-      DB_PASSWORD: ${DB_PASSWORD}
+      DB_PASSWORD_FILE: /run/secrets/db_password
       TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
       PANEL_URL: ${PANEL_URL}
       ALERT_POLL_MS: ${ALERT_POLL_MS}
       ALERT_LEASE_SECONDS: ${ALERT_LEASE_SECONDS}
+      TELEGRAM_API_URL: ${TELEGRAM_API_URL:-https://api.telegram.org}
       TZ: ${TZ}
     volumes:
       - ./db/migrations:/app/migrations:ro
+      - ${DB_PASSWORD_HOST_FILE}:/run/secrets/db_password:ro
       - ${TELEGRAM_BOT_TOKEN_HOST_FILE}:/run/secrets/telegram_bot_token:ro
     networks:
       - internal

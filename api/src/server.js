@@ -8,6 +8,7 @@ import path from "node:path";
 import argon2 from "argon2";
 import mysql from "mysql2/promise";
 import { isBelowFreeSpaceThreshold } from "./capacity.js";
+import { databaseConfig } from "./database.js";
 import { migrate } from "./migrate.js";
 import { mysqlToIso, toMysqlTimestamp } from "./time.js";
 
@@ -26,14 +27,8 @@ if (!Number.isFinite(minimumFreePercent) || minimumFreePercent < 0 || minimumFre
   throw new Error("RAW_MIN_FREE_PERCENT must be between 0 and 100");
 }
 const pool = mysql.createPool({
-  host: process.env.DB_HOST ?? "db",
-  port: Number.parseInt(process.env.DB_PORT ?? "3306", 10),
-  database: process.env.DB_NAME ?? "chromat",
-  user: process.env.DB_USER ?? "chromat_user",
-  password: process.env.DB_PASSWORD,
-  connectionLimit: 4,
+  ...databaseConfig(4),
   enableKeepAlive: true,
-  dateStrings: true,
 });
 const rateBuckets = new Map();
 const loginBuckets = new Map();
@@ -1306,6 +1301,27 @@ async function adminPauseCapacity(request, response) {
   sendJson(response, 200, { status: "paused" });
 }
 
+async function finalizeRawFile(sourceId, eventId, relativePath, stagingRelativePath) {
+  const absolutePath = path.join(rawRoot, relativePath);
+  const stagingPath = path.join(rawRoot, stagingRelativePath);
+  await fsp.mkdir(path.dirname(absolutePath), { recursive: true, mode: 0o700 });
+  try {
+    await fsp.rename(stagingPath, absolutePath);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    await fsp.access(absolutePath);
+  }
+  const [result] = await pool.query(
+    `UPDATE raw_files
+        SET state = 'ready', staged_path = NULL
+      WHERE source_id = ? AND event_id = ? AND state = 'staged'`,
+    [sourceId, eventId],
+  );
+  if (result.affectedRows !== 1) {
+    throw new Error("raw_file_finalization_missing");
+  }
+}
+
 async function ingestEvent(request, response, sourceId) {
   let upload;
   try {
@@ -1337,15 +1353,27 @@ async function ingestEvent(request, response, sourceId) {
     const extension = image.mediaType === "image/png" ? "png" : "jpg";
     const relativePath = path.join("raw", sourceId, `${eventId}.${extension}`);
     const absolutePath = path.join(rawRoot, relativePath);
-    await fsp.mkdir(path.dirname(absolutePath), { recursive: true, mode: 0o700 });
+    const stagingRelativePath = path.join(
+      "raw",
+      ".staging",
+      sourceId,
+      `${eventId}.${extension}`,
+    );
+    const stagingPath = path.join(rawRoot, stagingRelativePath);
+    await fsp.mkdir(path.dirname(stagingPath), { recursive: true, mode: 0o700 });
 
     const connection = await pool.getConnection();
     let transactionStarted = false;
+    let committed = false;
     try {
       await connection.beginTransaction();
       transactionStarted = true;
       const [existingRows] = await connection.query(
-        "SELECT status, image_sha256, received_at FROM monitoring_events WHERE source_id = ? AND event_id = ? FOR UPDATE",
+        `SELECT e.status, e.image_sha256, e.received_at, r.storage_path, r.staged_path,
+                r.state AS raw_state
+           FROM monitoring_events e
+           JOIN raw_files r ON r.source_id = e.source_id AND r.event_id = e.event_id
+          WHERE e.source_id = ? AND e.event_id = ? FOR UPDATE`,
         [sourceId, eventId],
       );
       if (existingRows.length > 0) {
@@ -1361,6 +1389,14 @@ async function ingestEvent(request, response, sourceId) {
           );
           return;
         }
+        if (existing.raw_state === "staged") {
+          await finalizeRawFile(
+            sourceId,
+            eventId,
+            existing.storage_path,
+            existing.staged_path,
+          );
+        }
         const statusCode = ["pending", "processing"].includes(existing.status)
           ? 202
           : 200;
@@ -1373,7 +1409,7 @@ async function ingestEvent(request, response, sourceId) {
         return;
       }
 
-      await fsp.rename(upload.temporaryPath, absolutePath);
+      await fsp.rename(upload.temporaryPath, stagingPath);
       const receivedMysql = toMysqlTimestamp(receivedAt);
       await connection.query(
         `INSERT INTO monitoring_events
@@ -1396,12 +1432,13 @@ async function ingestEvent(request, response, sourceId) {
       );
       await connection.query(
         `INSERT INTO raw_files
-          (source_id, event_id, storage_path, media_type, byte_size, sha256, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          (source_id, event_id, storage_path, staged_path, state, media_type, byte_size, sha256, created_at)
+         VALUES (?, ?, ?, ?, 'staged', ?, ?, ?, ?)`,
         [
           sourceId,
           eventId,
           relativePath,
+          stagingRelativePath,
           image.mediaType,
           image.byteSize,
           image.sha256,
@@ -1415,6 +1452,8 @@ async function ingestEvent(request, response, sourceId) {
         [sourceId, eventId, receivedMysql, receivedMysql],
       );
       await connection.commit();
+      committed = true;
+      await finalizeRawFile(sourceId, eventId, relativePath, stagingRelativePath);
       sendJson(response, 202, {
         event_id: eventId,
         status: "pending",
@@ -1423,7 +1462,9 @@ async function ingestEvent(request, response, sourceId) {
       });
     } catch (error) {
       if (transactionStarted) await connection.rollback();
-      await fsp.rm(absolutePath, { force: true });
+      if (!committed) {
+        await fsp.rm(stagingPath, { force: true });
+      }
       throw error;
     } finally {
       connection.release();
@@ -1880,6 +1921,17 @@ const server = http.createServer(async (request, response) => {
 
 async function start() {
   await migrate();
+  const [stagedFiles] = await pool.query(
+    "SELECT source_id, event_id, storage_path, staged_path FROM raw_files WHERE state = 'staged'",
+  );
+  for (const rawFile of stagedFiles) {
+    await finalizeRawFile(
+      rawFile.source_id,
+      rawFile.event_id,
+      rawFile.storage_path,
+      rawFile.staged_path,
+    );
+  }
   server.listen(port, "0.0.0.0", () => {
     console.log(JSON.stringify({ event: "api_started", port }));
   });

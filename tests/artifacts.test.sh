@@ -7,11 +7,27 @@ tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 package_dir="$tmp_dir/package"
-mkdir -p "$package_dir/images" "$package_dir/model"
+mkdir -p \
+  "$package_dir/images" \
+  "$package_dir/model" \
+  "$package_dir/scripts" \
+  "$package_dir/tests/smoke" \
+  "$package_dir/docs/deployment"
 printf 'model\n' >"$package_dir/model/model.bin"
 printf 'image\n' >"$package_dir/images/api.tar"
-sha256sum "$package_dir/model/model.bin" "$package_dir/images/api.tar" \
-  | sed "s#${package_dir}/##" >"$package_dir/checksums.sha256"
+for path in \
+  scripts/backup.sh \
+  scripts/check-tls-expiry.sh \
+  scripts/verify-artifacts.sh \
+  scripts/verify-backup.sh \
+  tests/smoke/run.sh \
+  docs/deployment/promotion.md; do
+  printf 'operational file\n' >"$package_dir/$path"
+done
+(
+  cd "$package_dir"
+  find . -type f ! -name checksums.sha256 -print0 | sort -z | xargs -0 sha256sum > checksums.sha256
+)
 model_sha256="$(sha256sum "$package_dir/model/model.bin" | cut -d' ' -f1)"
 cat >"$package_dir/manifest.json" <<'EOF'
 {

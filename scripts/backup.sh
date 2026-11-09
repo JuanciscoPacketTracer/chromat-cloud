@@ -108,7 +108,7 @@ ${COMPOSE} stop worker >/dev/null
 WORKER_STOPPED=1
 
 ${COMPOSE} exec -T db sh -c \
-  'mariadb-dump --single-transaction --routines --triggers -u root -p"$MARIADB_ROOT_PASSWORD" "$MARIADB_DATABASE"' \
+  'mariadb-dump --single-transaction --routines --triggers -u root -p"$(cat /run/secrets/db_root_password)" "$MARIADB_DATABASE"' \
   >"${WORK_DIR}/database.sql"
 check_deadline
 

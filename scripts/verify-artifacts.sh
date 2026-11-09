@@ -32,6 +32,18 @@ production_env="$package_dir/production.env.example"
   printf 'artifact package is missing manifest, checksums, or production.env.example\n' >&2
   exit 1
 }
+for required_path in \
+  scripts/backup.sh \
+  scripts/check-tls-expiry.sh \
+  scripts/verify-artifacts.sh \
+  scripts/verify-backup.sh \
+  tests/smoke/run.sh \
+  docs/deployment/promotion.md; do
+  [[ -f "$package_dir/$required_path" ]] || {
+    printf 'artifact package is missing operational file: %s\n' "$required_path" >&2
+    exit 1
+  }
+done
 
 python3 - "$manifest" "$package_dir" "$production_env" <<'PY'
 import json

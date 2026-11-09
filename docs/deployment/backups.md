@@ -56,7 +56,7 @@ Configura las variables reales fuera de Git:
 export BACKUP_ROOT=/srv/chromat/backups
 export BACKUP_EXTERNAL_DIR=/mnt/chromat-backups
 export BACKUP_AGE_RECIPIENT_FILE=/etc/chromat/backup-age-recipient
-export BACKUP_SECRET_FILES='/etc/chromat/secrets/telegram_bot_token'
+export BACKUP_SECRET_FILES='/etc/chromat/secrets/db_password /etc/chromat/secrets/db_root_password /etc/chromat/secrets/telegram_bot_token'
 export BACKUP_MODE=full
 ```
 
@@ -103,8 +103,10 @@ export BACKUP_BASE_DIR=/srv/chromat/backups/BASE-FULL
 scripts/verify-backup.sh /srv/chromat/backups/20261109T120000Z
 ```
 
-`BACKUP_BASE_DIR` solo es necesario para verificar un incremental. Un backup
-completo no debe recibir una base distinta.
+`BACKUP_BASE_DIR` solo es necesario para verificar un incremental. Cada
+incremental se calcula respecto de su full base, por lo que la verificación
+restaura ese full y el incremental seleccionado; no depende de incrementales
+intermedios. Un backup completo no debe recibir una base distinta.
 
 `scripts/verify-backup.sh` verifica:
 

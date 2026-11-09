@@ -90,6 +90,10 @@ cp -- db/migrations/*.sql "$package_dir/db/"
 mkdir -p "$package_dir/nginx" "$package_dir/web"
 cp -R -- nginx/conf.d "$package_dir/nginx/"
 cp -R -- web/public "$package_dir/web/"
+cp -R -- scripts "$package_dir/scripts"
+cp -R -- tests "$package_dir/tests"
+mkdir -p "$package_dir/docs"
+cp -R -- docs/deployment "$package_dir/docs/"
 {
   sed \
     -e 's/^APP_ENV=.*/APP_ENV=production/' \

@@ -22,7 +22,7 @@ Optional environment:
                  Explicitly allow self-signed certificates for local-only runs
   SMOKE_TESTS    Comma-separated scenarios or "all"
                  ingestion,processing,inference,aggregation,migrations,
-                 capacity,admin-auth,source-management
+                 capacity,admin-auth,source-management,telegram
   SMOKE_SOURCE_ID
                  Dedicated test source to clean after event scenarios
 EOF
@@ -54,7 +54,7 @@ smoke_curl --silent --show-error --fail "$base_url/health/ready" >/dev/null ||
 bash "$repo_root/tests/smoke/skeleton.sh"
 
 if [[ "$selected_tests" == "all" ]]; then
-  selected_tests="ingestion,processing,inference,aggregation,migrations,capacity,admin-auth,source-management"
+  selected_tests="ingestion,processing,inference,aggregation,migrations,capacity,admin-auth,source-management,telegram"
 fi
 
 IFS=',' read -r -a tests <<<"$selected_tests"
@@ -117,6 +117,9 @@ for test_name in "${tests[@]}"; do
     admin-auth|source-management)
       : "${ADMIN_USERNAME:?ADMIN_USERNAME is required for $test_name}"
       : "${ADMIN_PASSWORD:?ADMIN_PASSWORD is required for $test_name}"
+      ;;
+    telegram)
+      : "${TELEGRAM_API_URL:?TELEGRAM_API_URL is required for telegram}"
       ;;
     "")
       fail "empty smoke test name"

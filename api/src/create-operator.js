@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import argon2 from "argon2";
 import mysql from "mysql2/promise";
 import { migrate } from "./migrate.js";
+import { databaseConfig } from "./database.js";
 
 const username = process.argv[2];
 const passwordFile = process.env.OPERATOR_PASSWORD_FILE;
@@ -18,14 +19,7 @@ if (!password) {
 }
 
 await migrate();
-const pool = mysql.createPool({
-  host: process.env.DB_HOST ?? "db",
-  port: Number.parseInt(process.env.DB_PORT ?? "3306", 10),
-  database: process.env.DB_NAME ?? "chromat",
-  user: process.env.DB_USER ?? "chromat_user",
-  password: process.env.DB_PASSWORD,
-  dateStrings: true,
-});
+const pool = mysql.createPool(databaseConfig());
 const connection = await pool.getConnection();
 try {
   const [lockRows] = await connection.query(

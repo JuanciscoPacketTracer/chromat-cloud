@@ -18,6 +18,8 @@ El resultado queda en `dist/artifacts/2026.11.09-1/` y contiene:
 - `images/*.tar`: imágenes propias y de terceros exportadas con `docker save`.
 - `model/deterministic-model.json`: modelo separado.
 - `db/*.sql`: migraciones.
+- `scripts/`, `tests/smoke/` y `docs/deployment/`: runtime operativo,
+  verificaciones y runbooks necesarios para promover fuera de Git.
 - `compose.yaml`, `nginx/`, `web/` y `.env.example`: runtime no secreto.
 - `production.env.example`: nombres versionados, `PULL_POLICY=never` y
   placeholders que deben completarse con secretos provisionados fuera del

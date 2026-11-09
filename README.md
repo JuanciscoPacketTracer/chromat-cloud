@@ -65,6 +65,8 @@ cp .env.example .env
 export CHROMAT_VM_IP=192.0.2.10 # replace with the VM address
 mkdir -p secrets
 printf '%s\n' 'replace-with-a-development-token' > secrets/telegram_bot_token
+printf '%s\n' 'replace-with-a-development-db-password' > secrets/db_password
+printf '%s\n' 'replace-with-a-development-root-password' > secrets/db_root_password
 bash scripts/dev-tls.sh
 docker compose up --build -d
 ```
@@ -78,8 +80,9 @@ configura `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `SMOKE_SOURCE_ID` y
 `SMOKE_SOURCE_API_KEY` para la Fuente de monitoreo dedicada. Configura
 `FOREIGN_EVENT_ID` con un evento perteneciente a otra Fuente de monitoreo para
 probar el aislamiento entre fuentes.
-El worker Telegram usa el archivo externo indicado por
-`TELEGRAM_BOT_TOKEN_HOST_FILE`.
+El worker Telegram y las credenciales de MariaDB usan archivos externos
+indicados por `TELEGRAM_BOT_TOKEN_HOST_FILE`, `DB_PASSWORD_HOST_FILE` y
+`DB_ROOT_PASSWORD_HOST_FILE`.
 
 ## 6. Operación y validación
 

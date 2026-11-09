@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import mysql from "mysql2/promise";
+import { databaseConfig } from "./database.js";
 import { migrate } from "./migrate.js";
 
 const rawRoot = process.env.RAW_DATA_DIR ?? "/app/uploads";
@@ -18,15 +19,7 @@ if (!Number.isInteger(derivedRetentionDays) || derivedRetentionDays < 1) {
 }
 
 await migrate();
-const pool = mysql.createPool({
-  host: process.env.DB_HOST ?? "db",
-  port: Number.parseInt(process.env.DB_PORT ?? "3306", 10),
-  database: process.env.DB_NAME ?? "chromat",
-  user: process.env.DB_USER ?? "chromat_user",
-  password: process.env.DB_PASSWORD,
-  connectionLimit: 2,
-  dateStrings: true,
-});
+const pool = mysql.createPool(databaseConfig(2));
 
 function rawPath(storagePath) {
   const resolvedRoot = path.resolve(rawRoot);
