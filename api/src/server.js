@@ -233,7 +233,7 @@ async function adminAudit(request, response) {
 }
 
 async function adminDownloadRaw(request, response, sourceId, eventId) {
-  const session = await authenticateAdmin(request, response);
+  const session = await adminSessionWithCsrf(request, response);
   if (!session) return;
   const [rows] = await pool.query(
     `SELECT r.storage_path, r.media_type, r.byte_size
@@ -274,7 +274,7 @@ async function adminDownloadRaw(request, response, sourceId, eventId) {
     return;
   }
 
-  await audit("raw_downloaded", request, session.operator_id, {
+  await audit("raw_download_started", request, session.operator_id, {
     source_id: sourceId,
     event_id: eventId,
   });
@@ -285,6 +285,32 @@ async function adminDownloadRaw(request, response, sourceId, eventId) {
     "cache-control": "no-store",
   });
   const stream = fs.createReadStream(rawPath);
+  let completed = false;
+  response.once("finish", () => {
+    completed = true;
+    audit("raw_downloaded", request, session.operator_id, {
+      source_id: sourceId,
+      event_id: eventId,
+    }).catch((error) => console.error(JSON.stringify({
+      event: "raw_download_audit_failed",
+      source_id: sourceId,
+      event_id: eventId,
+      error: error.message,
+    })));
+  });
+  response.once("close", () => {
+    if (!completed) {
+      audit("raw_download_failed", request, session.operator_id, {
+        source_id: sourceId,
+        event_id: eventId,
+      }).catch((error) => console.error(JSON.stringify({
+        event: "raw_download_audit_failed",
+        source_id: sourceId,
+        event_id: eventId,
+        error: error.message,
+      })));
+    }
+  });
   stream.on("error", () => {
     if (!response.headersSent) {
       errorResponse(response, 404, "not_found", "Raw data not found");
