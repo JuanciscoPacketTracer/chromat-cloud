@@ -1298,6 +1298,14 @@ async function adminResumeCapacity(request, response) {
   sendJson(response, 200, { status: "resumed" });
 }
 
+async function adminPauseCapacity(request, response) {
+  const session = await adminSessionWithCsrf(request, response);
+  if (!session) return;
+  await fsp.writeFile(capacityProtectionMarker, "operator\n");
+  await audit("capacity_protection_enabled", request, session.operator_id);
+  sendJson(response, 200, { status: "paused" });
+}
+
 async function ingestEvent(request, response, sourceId) {
   let upload;
   try {
@@ -1566,6 +1574,13 @@ const server = http.createServer(async (request, response) => {
       parsedUrl.pathname === "/api/v1/admin/capacity/resume"
     ) {
       await adminResumeCapacity(request, response);
+      return;
+    }
+    if (
+      request.method === "POST" &&
+      parsedUrl.pathname === "/api/v1/admin/capacity/pause"
+    ) {
+      await adminPauseCapacity(request, response);
       return;
     }
     const adminAlertReemitMatch = parsedUrl.pathname.match(
