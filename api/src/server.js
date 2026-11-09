@@ -29,6 +29,12 @@ const pool = mysql.createPool({
 });
 const rateBuckets = new Map();
 const loginBuckets = new Map();
+const httpMetrics = {
+  startedAt: new Date().toISOString(),
+  requests: 0,
+  totalLatencyMs: 0,
+  statusCodes: {},
+};
 
 function sendJson(response, statusCode, body, headers = {}) {
   const payload = JSON.stringify(body);
@@ -396,6 +402,52 @@ async function adminAudit(request, response) {
       request_ip: row.request_ip,
       metadata: row.metadata,
     })),
+  });
+}
+
+async function adminMetrics(request, response) {
+  const session = await authenticateAdmin(request, response);
+  if (!session) return;
+  const [jobRows] = await pool.query(
+    `SELECT state, COUNT(*) AS count, MIN(available_at) AS oldest_available_at
+       FROM jobs
+      GROUP BY state`,
+  );
+  let storage = null;
+  try {
+    const stats = fs.statfsSync(rawRoot);
+    const totalBytes = Number(stats.blocks) * Number(stats.bsize);
+    const availableBytes = Number(stats.bavail) * Number(stats.bsize);
+    storage = {
+      total_bytes: totalBytes,
+      available_bytes: availableBytes,
+      available_ratio: totalBytes > 0 ? availableBytes / totalBytes : null,
+    };
+  } catch {
+    storage = { available: false };
+  }
+  const statusCodes = Object.fromEntries(
+    Object.entries(httpMetrics.statusCodes).map(([code, count]) => [code, count]),
+  );
+  sendJson(response, 200, {
+    started_at: httpMetrics.startedAt,
+    http: {
+      requests: httpMetrics.requests,
+      average_latency_ms: httpMetrics.requests > 0
+        ? httpMetrics.totalLatencyMs / httpMetrics.requests
+        : 0,
+      status_codes: statusCodes,
+    },
+    jobs: Object.fromEntries(jobRows.map((row) => [
+      row.state,
+      {
+        count: Number(row.count),
+        oldest_available_at: row.oldest_available_at
+          ? mysqlToIso(row.oldest_available_at)
+          : null,
+      },
+    ])),
+    storage,
   });
 }
 
@@ -1421,6 +1473,15 @@ async function getEvent(request, response, sourceId, eventId) {
 }
 
 const server = http.createServer(async (request, response) => {
+  const requestStartedAt = process.hrtime.bigint();
+  response.once("finish", () => {
+    const latencyMs = Number(process.hrtime.bigint() - requestStartedAt) / 1e6;
+    httpMetrics.requests += 1;
+    httpMetrics.totalLatencyMs += latencyMs;
+    const statusCode = String(response.statusCode);
+    httpMetrics.statusCodes[statusCode] =
+      (httpMetrics.statusCodes[statusCode] ?? 0) + 1;
+  });
   try {
     if (request.method === "GET" && request.url === "/health/live") {
       sendJson(response, 200, { status: "ok" });
@@ -1449,6 +1510,10 @@ const server = http.createServer(async (request, response) => {
     }
     if (request.method === "GET" && parsedUrl.pathname === "/api/v1/admin/audit") {
       await adminAudit(request, response);
+      return;
+    }
+    if (request.method === "GET" && parsedUrl.pathname === "/api/v1/admin/metrics") {
+      await adminMetrics(request, response);
       return;
     }
     const adminAlertReemitMatch = parsedUrl.pathname.match(

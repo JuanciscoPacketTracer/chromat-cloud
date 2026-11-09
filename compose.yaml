@@ -1,8 +1,16 @@
 name: chromat
 
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "90"
+
 services:
   db:
     image: mariadb:11.8.2
+    restart: unless-stopped
+    logging: *default-logging
     environment:
       MARIADB_DATABASE: ${DB_NAME}
       MARIADB_USER: ${DB_USER}
@@ -26,6 +34,8 @@ services:
       start_period: 10s
 
   api:
+    restart: unless-stopped
+    logging: *default-logging
     build:
       context: ./api
       dockerfile: Dockerfile
@@ -67,6 +77,8 @@ services:
       start_period: 5s
 
   worker:
+    restart: unless-stopped
+    logging: *default-logging
     build:
       context: ./api
       dockerfile: Dockerfile
@@ -107,6 +119,8 @@ services:
         condition: service_healthy
 
   telegram-worker:
+    restart: unless-stopped
+    logging: *default-logging
     build:
       context: ./api
       dockerfile: Dockerfile
@@ -136,6 +150,8 @@ services:
         condition: service_healthy
 
   inference:
+    restart: unless-stopped
+    logging: *default-logging
     build:
       context: ./inference
       dockerfile: Dockerfile
@@ -164,6 +180,8 @@ services:
 
   nginx:
     image: nginx:1.29.2-alpine
+    restart: unless-stopped
+    logging: *default-logging
     ports:
       - "443:443"
     volumes:

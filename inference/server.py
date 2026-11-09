@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import logging
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -9,6 +10,23 @@ MODEL_PATH = os.environ.get("MODEL_PATH", "/app/models/deterministic-model.json"
 MODEL_VERSION = os.environ.get("MODEL_VERSION", "deterministic-1")
 MODEL_SHA256 = os.environ["MODEL_SHA256"]
 PORT = int(os.environ.get("INFERENCE_PORT", "8000"))
+LOGGER = logging.getLogger("chromat.inference")
+
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        return json.dumps({
+            "event": "inference",
+            "level": record.levelname,
+            "message": record.getMessage(),
+        })
+
+
+logging.basicConfig(
+    level=logging.INFO,
+)
+for handler in logging.getLogger().handlers:
+    handler.setFormatter(JsonFormatter())
 
 
 def load_model():
@@ -75,12 +93,20 @@ class Handler(BaseHTTPRequestHandler):
             result = classify(payload)
             self.send_json(200, result)
         except (ValueError, KeyError, json.JSONDecodeError) as error:
+            LOGGER.warning("request_rejected:%s", type(error).__name__)
             self.send_json(422, {"error": str(error)})
         except Exception:
+            LOGGER.exception("request_failed")
             self.send_json(500, {"error": "inference_failed"})
 
-    def log_message(self, format, *args):
-        return
+    def log_request(self, code="-", size="-"):
+        LOGGER.info(
+            "http_request method=%s path=%s status=%s bytes=%s",
+            self.command,
+            self.path,
+            code,
+            size,
+        )
 
 
 ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
