@@ -232,6 +232,69 @@ async function adminAudit(request, response) {
   });
 }
 
+async function adminDownloadRaw(request, response, sourceId, eventId) {
+  const session = await authenticateAdmin(request, response);
+  if (!session) return;
+  const [rows] = await pool.query(
+    `SELECT r.storage_path, r.media_type, r.byte_size
+       FROM raw_files r
+      WHERE r.source_id = ? AND r.event_id = ?
+      LIMIT 1`,
+    [sourceId, eventId],
+  );
+  if (rows.length === 0) {
+    await audit("raw_access_denied", request, session.operator_id, {
+      source_id: sourceId,
+      event_id: eventId,
+    });
+    errorResponse(response, 404, "not_found", "Raw data not found");
+    return;
+  }
+
+  const rawPath = path.resolve(rawRoot, rows[0].storage_path);
+  const rawRootPath = `${path.resolve(rawRoot)}${path.sep}`;
+  if (!rawPath.startsWith(rawRootPath)) {
+    await audit("raw_access_denied", request, session.operator_id, {
+      source_id: sourceId,
+      event_id: eventId,
+      reason: "invalid_storage_path",
+    });
+    errorResponse(response, 500, "internal_error", "Invalid raw data path");
+    return;
+  }
+
+  try {
+    await fsp.access(rawPath, fs.constants.R_OK);
+  } catch {
+    await audit("raw_access_missing", request, session.operator_id, {
+      source_id: sourceId,
+      event_id: eventId,
+    });
+    errorResponse(response, 404, "not_found", "Raw data not found");
+    return;
+  }
+
+  await audit("raw_downloaded", request, session.operator_id, {
+    source_id: sourceId,
+    event_id: eventId,
+  });
+  response.writeHead(200, {
+    "content-type": rows[0].media_type,
+    "content-length": rows[0].byte_size,
+    "content-disposition": `attachment; filename="${eventId}"`,
+    "cache-control": "no-store",
+  });
+  const stream = fs.createReadStream(rawPath);
+  stream.on("error", () => {
+    if (!response.headersSent) {
+      errorResponse(response, 404, "not_found", "Raw data not found");
+    } else {
+      response.destroy();
+    }
+  });
+  stream.pipe(response);
+}
+
 function createSourceKey() {
   const apiKey = `chm_${crypto.randomBytes(32).toString("base64url")}`;
   return {
@@ -1006,6 +1069,23 @@ const server = http.createServer(async (request, response) => {
     }
     if (request.method === "GET" && parsedUrl.pathname === "/api/v1/admin/audit") {
       await adminAudit(request, response);
+      return;
+    }
+    const rawDownloadMatch = parsedUrl.pathname.match(
+      /^\/api\/v1\/admin\/sources\/([0-9a-f-]{36})\/events\/([0-9a-f-]{36})\/raw$/i,
+    );
+    if (
+      request.method === "GET" &&
+      rawDownloadMatch &&
+      isUuidV4(rawDownloadMatch[1]) &&
+      isUuidV4(rawDownloadMatch[2])
+    ) {
+      await adminDownloadRaw(
+        request,
+        response,
+        rawDownloadMatch[1].toLowerCase(),
+        rawDownloadMatch[2].toLowerCase(),
+      );
       return;
     }
     if (request.method === "POST" && parsedUrl.pathname === "/api/v1/admin/sources") {
