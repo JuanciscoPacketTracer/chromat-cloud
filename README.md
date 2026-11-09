@@ -119,6 +119,8 @@ tests/smoke/run.sh
 
 Los backups se generan con `scripts/backup.sh` y se validan en aislamiento con
 `scripts/verify-backup.sh`. Las migraciones son numeradas y forward-only.
+La preparación de paquetes Fedora → Ubuntu está documentada en
+[`docs/deployment/artifacts.md`](docs/deployment/artifacts.md).
 
 ## 7. Convenciones
 
