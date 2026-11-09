@@ -102,7 +102,7 @@ docker compose --env-file production.env ps
 docker compose --env-file production.env logs --no-color api worker telegram-worker \
   | tee "$EVIDENCE_DIR/migrations.log"
 docker compose --env-file production.env exec -T db \
-  sh -c 'mariadb -u root -p"$MARIADB_ROOT_PASSWORD" "$MARIADB_DATABASE" \
+  sh -c 'mariadb -u root -p"$(cat /run/secrets/db_root_password)" "$MARIADB_DATABASE" \
     -e "SELECT version FROM schema_migrations ORDER BY version"'
 ```
 
