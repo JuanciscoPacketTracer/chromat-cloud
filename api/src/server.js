@@ -128,7 +128,8 @@ async function adminListSourceEvents(request, response, sourceId) {
 async function listSourceState(response, sourceId) {
   const [rows] = await pool.query(
     `SELECT source_id, crop, current_stage, episode_seq, consecutive_stage,
-            consecutive_count, last_occurred_at, last_confidence, updated_at
+            consecutive_count, last_occurred_at, last_confidence,
+            aggregation_rule_version, aggregation_config, updated_at
        FROM monitoring_states
       WHERE source_id = ?
       ORDER BY crop`,
@@ -148,6 +149,10 @@ async function listSourceState(response, sourceId) {
       last_confidence: state.last_confidence == null
         ? null
         : Number(state.last_confidence),
+      aggregation_rule_version: state.aggregation_rule_version,
+      aggregation_config: typeof state.aggregation_config === "string"
+        ? JSON.parse(state.aggregation_config)
+        : state.aggregation_config,
       updated_at: mysqlToIso(state.updated_at),
     })),
   });

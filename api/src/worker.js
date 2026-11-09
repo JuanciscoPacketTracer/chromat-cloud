@@ -17,6 +17,7 @@ const inferenceModelVersion = process.env.INFERENCE_MODEL_VERSION;
 const inferenceModelSha256 = process.env.INFERENCE_MODEL_SHA256;
 const officialAlgorithm = process.env.OFFICIAL_ALGORITHM;
 const aggregationConfig = {
+  ruleVersion: process.env.AGGREGATION_RULE_VERSION ?? "1",
   confidenceThreshold: Number.parseFloat(
     process.env.AGGREGATION_CONFIDENCE_THRESHOLD ?? "0.8",
   ),
@@ -234,7 +235,8 @@ async function completeJob(job, results, startedAt) {
     if (!event) throw new Error("event_missing_for_aggregation");
     const [stateRows] = await connection.query(
       `SELECT current_stage, episode_seq, consecutive_stage, consecutive_count,
-              last_occurred_at, last_confidence
+              last_occurred_at, last_confidence, aggregation_rule_version,
+              aggregation_config
          FROM monitoring_states
         WHERE source_id = ? AND crop = ?
         FOR UPDATE`,
@@ -252,6 +254,10 @@ async function completeJob(job, results, startedAt) {
           lastConfidence: stateRows[0].last_confidence == null
             ? null
             : Number(stateRows[0].last_confidence),
+          aggregationRuleVersion: stateRows[0].aggregation_rule_version,
+          aggregationConfig: typeof stateRows[0].aggregation_config === "string"
+            ? JSON.parse(stateRows[0].aggregation_config)
+            : stateRows[0].aggregation_config,
         }
       : {};
     const result = applyObservation(
@@ -268,10 +274,17 @@ async function completeJob(job, results, startedAt) {
     );
     if (!result.accepted) return;
     await connection.query(
+      `INSERT IGNORE INTO aggregation_rule_versions
+        (rule_version, configuration, created_at)
+       VALUES (?, ?, UTC_TIMESTAMP(3))`,
+      [aggregationConfig.ruleVersion, JSON.stringify(aggregationConfig)],
+    );
+    await connection.query(
       `INSERT INTO monitoring_states
         (source_id, crop, current_stage, episode_seq, consecutive_stage,
-         consecutive_count, last_occurred_at, last_confidence, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3))
+         consecutive_count, last_occurred_at, last_confidence,
+         aggregation_rule_version, aggregation_config, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3))
        ON DUPLICATE KEY UPDATE
          current_stage = VALUES(current_stage),
          episode_seq = VALUES(episode_seq),
@@ -279,6 +292,8 @@ async function completeJob(job, results, startedAt) {
          consecutive_count = VALUES(consecutive_count),
          last_occurred_at = VALUES(last_occurred_at),
          last_confidence = VALUES(last_confidence),
+         aggregation_rule_version = VALUES(aggregation_rule_version),
+         aggregation_config = VALUES(aggregation_config),
          updated_at = VALUES(updated_at)`,
       [
         job.source_id,
@@ -291,6 +306,8 @@ async function completeJob(job, results, startedAt) {
           ? toMysqlTimestamp(new Date(result.state.lastOccurredAt))
           : null,
         result.state.lastConfidence ?? null,
+        aggregationConfig.ruleVersion,
+        JSON.stringify(aggregationConfig),
       ],
     );
   }
