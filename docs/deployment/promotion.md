@@ -20,6 +20,7 @@ Define un identificador de promoción y prepara un directorio de evidencia
 fuera de la release:
 
 ```bash
+set -o errexit -o nounset -o pipefail
 export PROMOTION_ID=20261109-1
 export EVIDENCE_DIR=/srv/chromat/promotions/$PROMOTION_ID
 sudo install -d -m 0750 "$EVIDENCE_DIR"
@@ -61,6 +62,7 @@ Ejecuta un backup completo antes de modificar la base y verifica el directorio
 local o su copia externa:
 
 ```bash
+set -o pipefail
 export BACKUP_MODE=full
 scripts/backup.sh | tee "$EVIDENCE_DIR/backup.path"
 backup_dir="$(cat "$EVIDENCE_DIR/backup.path" | tail -n 1)"
@@ -104,8 +106,22 @@ docker compose --env-file production.env exec -T db \
     -e "SELECT version FROM schema_migrations ORDER BY version"'
 ```
 
-Espera a que MariaDB, API e inferencia estén saludables. El readiness público
-debe comprobarse con la CA de producción, no con `--insecure`:
+Espera a que MariaDB, API e inferencia estén saludables y confirma que
+`worker` y `telegram-worker` estén `running`:
+
+```bash
+for service in db api worker telegram-worker inference nginx; do
+  docker compose --env-file production.env ps --status running "$service" \
+    | grep -q "$service"
+done
+docker inspect --format '{{.Name}} {{.State.Health.Status}}' \
+  chromat-db-1 chromat-api-1 chromat-inference-1
+```
+
+`/health/live` y `/health/ready` son probes operativos existentes, no rutas de
+negocio; por eso permanecen sin versión aunque las rutas API sí usan `/api/v1`.
+El readiness público debe comprobarse con la CA de producción, no con
+`--insecure`:
 
 ```bash
 export CHROMAT_VM_IP=192.168.1.50
@@ -126,6 +142,7 @@ Provisiona una Fuente de monitoreo dedicada y sus credenciales en variables
 fuera de Git. Ejecuta todos los escenarios con la CA de producción:
 
 ```bash
+set -o pipefail
 CA_CERT=/srv/chromat/tls/ca.crt \
 BASE_URL=https://chromat.lan \
 SMOKE_TESTS=all \
@@ -179,7 +196,13 @@ el rollback de aplicación puede usar `previous`:
 ```bash
 sudo ufw delete allow 443/tcp
 docker compose --env-file production.env down
-# cargar las imágenes y seleccionar active/previous según artifacts.md
+previous_release="$(readlink -f /srv/chromat/previous)"
+test -d "$previous_release"
+for image_archive in "$previous_release"/images/*.tar; do
+  docker load --input "$image_archive"
+done
+sudo ln -sfn "$previous_release" /srv/chromat/active
+cd /srv/chromat/active
 docker compose --env-file production.env up -d --no-build
 ```
 

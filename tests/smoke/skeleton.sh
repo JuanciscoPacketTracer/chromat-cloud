@@ -27,6 +27,8 @@ fail() {
 [[ -f inference/models/deterministic-model.json ]] || fail "deterministic model is missing"
 [[ -f tests/smoke/processing.sh ]] || fail "processing smoke test is missing"
 [[ -f tests/smoke/inference.sh ]] || fail "inference smoke test is missing"
+[[ -f tests/smoke/aggregation.sh ]] || fail "aggregation smoke test is missing"
+[[ -f tests/smoke/migrations.sh ]] || fail "migration smoke test is missing"
 [[ -f tests/smoke/admin-auth.sh ]] || fail "admin auth smoke test is missing"
 [[ -f tests/smoke/source-management.sh ]] || fail "source management smoke test is missing"
 [[ -x tests/smoke/run.sh ]] || fail "smoke test runner is missing or not executable"

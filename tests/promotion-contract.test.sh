@@ -4,6 +4,11 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 runbook="$repo_root/docs/deployment/promotion.md"
 
+test -x "$repo_root/tests/smoke/aggregation.sh"
+test -x "$repo_root/tests/smoke/migrations.sh"
+grep -q 'aggregation' "$repo_root/tests/smoke/run.sh"
+grep -q 'migrations' "$repo_root/tests/smoke/run.sh"
+
 for required_phrase in \
   "backup" \
   "verific" \

@@ -21,7 +21,8 @@ Optional environment:
   ALLOW_INSECURE_TLS=true
                  Explicitly allow self-signed certificates for local-only runs
   SMOKE_TESTS    Comma-separated scenarios or "all"
-                 ingestion,processing,inference,capacity,admin-auth,source-management
+                 ingestion,processing,inference,aggregation,migrations,
+                 capacity,admin-auth,source-management
   SMOKE_SOURCE_ID
                  Dedicated test source to clean after event scenarios
 EOF
@@ -53,7 +54,7 @@ smoke_curl --silent --show-error --fail "$base_url/health/ready" >/dev/null ||
 bash "$repo_root/tests/smoke/skeleton.sh"
 
 if [[ "$selected_tests" == "all" ]]; then
-  selected_tests="ingestion,processing,inference,capacity,admin-auth,source-management"
+  selected_tests="ingestion,processing,inference,aggregation,migrations,capacity,admin-auth,source-management"
 fi
 
 IFS=',' read -r -a tests <<<"$selected_tests"
@@ -61,6 +62,13 @@ needs_source_cleanup=false
 for test_name in "${tests[@]}"; do
   if [[ "$test_name" == "ingestion" || "$test_name" == "processing" || "$test_name" == "inference" ]]; then
     needs_source_cleanup=true
+    ;;
+    aggregation)
+    : "${SMOKE_SOURCE_ID:?SMOKE_SOURCE_ID is required for aggregation}"
+    : "${ADMIN_USERNAME:?ADMIN_USERNAME is required for aggregation}"
+    : "${ADMIN_PASSWORD:?ADMIN_PASSWORD is required for aggregation}"
+    ;;
+    migrations)
   fi
 done
 if [[ "$needs_source_cleanup" == true ]]; then
