@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import mysql from "mysql2/promise";
 import { classifyHsv } from "./hsv.js";
 import { applyObservation } from "./aggregation.js";
+import { buildAlertCandidate } from "./alerts.js";
 import { migrate } from "./migrate.js";
 import { mysqlToIso, toMysqlTimestamp } from "./time.js";
 
@@ -224,9 +225,12 @@ async function completeJob(job, results, startedAt) {
 
   async function updateAggregatedState(connection, job, officialResult) {
     const [eventRows] = await connection.query(
-      `SELECT e.occurred_at, e.clock_suspect, e.crop, s.is_test
+      `SELECT e.occurred_at, e.clock_suspect, e.crop, s.is_test,
+              a.chat_id
          FROM monitoring_events e
          JOIN monitoring_sources s ON s.source_id = e.source_id
+         LEFT JOIN monitoring_source_alerts a
+           ON a.source_id = e.source_id AND a.crop = e.crop
         WHERE e.source_id = ? AND e.event_id = ?
         FOR UPDATE`,
       [job.source_id, job.event_id],
@@ -348,6 +352,33 @@ async function completeJob(job, results, startedAt) {
         JSON.stringify(aggregationConfig),
       ],
     );
+    const alert = buildAlertCandidate({
+      sourceId: job.source_id,
+      crop: event.crop,
+      eventId: job.event_id,
+      occurredAt: historyEntry.occurredAt,
+      transition: historyEntry.transition,
+      chatId: event.chat_id ?? null,
+      isTest: Boolean(event.is_test),
+    });
+    if (alert) {
+      await connection.query(
+        `INSERT IGNORE INTO monitoring_alerts
+          (source_id, crop, event_id, from_stage, to_stage, episode_seq,
+           chat_id, status, attempts, available_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, UTC_TIMESTAMP(3),
+                 UTC_TIMESTAMP(3))`,
+        [
+          alert.sourceId,
+          alert.crop,
+          alert.eventId,
+          alert.fromStage,
+          alert.toStage,
+          alert.episodeSeq,
+          alert.chatId,
+        ],
+      );
+    }
   }
 }
 

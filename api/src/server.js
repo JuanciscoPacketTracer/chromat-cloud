@@ -694,6 +694,7 @@ async function adminCleanupTestSource(request, response, sourceId) {
       );
     }
     await connection.query("DELETE FROM monitoring_source_alerts WHERE source_id = ?", [sourceId]);
+    await connection.query("DELETE FROM monitoring_alerts WHERE source_id = ?", [sourceId]);
     await connection.query("DELETE FROM monitoring_states WHERE source_id = ?", [sourceId]);
     await connection.query("DELETE FROM monitoring_state_history WHERE source_id = ?", [sourceId]);
     await connection.query("DELETE FROM analysis_runs WHERE source_id = ?", [sourceId]);
