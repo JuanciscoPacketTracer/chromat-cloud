@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import argon2 from "argon2";
 import mysql from "mysql2/promise";
+import { isBelowFreeSpaceThreshold } from "./capacity.js";
 import { migrate } from "./migrate.js";
 import { mysqlToIso, toMysqlTimestamp } from "./time.js";
 
@@ -17,6 +18,13 @@ const maxUploadBytes = Number.parseInt(
 );
 const rawRoot = process.env.RAW_DATA_DIR ?? "/app/uploads";
 const maintenanceMarker = path.join(rawRoot, ".maintenance");
+const capacityProtectionMarker = path.join(rawRoot, ".capacity-protection");
+const minimumFreePercent = Number.parseFloat(
+  process.env.RAW_MIN_FREE_PERCENT ?? "20",
+);
+if (!Number.isFinite(minimumFreePercent) || minimumFreePercent < 0 || minimumFreePercent > 100) {
+  throw new Error("RAW_MIN_FREE_PERCENT must be between 0 and 100");
+}
 const pool = mysql.createPool({
   host: process.env.DB_HOST ?? "db",
   port: Number.parseInt(process.env.DB_PORT ?? "3306", 10),
@@ -1253,6 +1261,43 @@ async function isMaintenanceActive() {
   }
 }
 
+function isCapacityProtectionActive() {
+  const stats = fs.statfsSync(rawRoot);
+  return isBelowFreeSpaceThreshold({
+    availableBytes: Number(stats.bavail) * Number(stats.bsize),
+    totalBytes: Number(stats.blocks) * Number(stats.bsize),
+  }, minimumFreePercent);
+}
+
+async function isIngestionPaused() {
+  if (await isMaintenanceActive()) return true;
+  try {
+    await fsp.access(capacityProtectionMarker, fs.constants.F_OK);
+    return true;
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  if (!isCapacityProtectionActive()) return false;
+  try {
+    await fsp.writeFile(capacityProtectionMarker, "capacity\n", { flag: "wx" });
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+  }
+  return true;
+}
+
+async function adminResumeCapacity(request, response) {
+  const session = await adminSessionWithCsrf(request, response);
+  if (!session) return;
+  if (isCapacityProtectionActive()) {
+    errorResponse(response, 409, "capacity_protection", "Free storage is still below the configured threshold");
+    return;
+  }
+  await fsp.rm(capacityProtectionMarker, { force: true });
+  await audit("capacity_protection_cleared", request, session.operator_id);
+  sendJson(response, 200, { status: "resumed" });
+}
+
 async function ingestEvent(request, response, sourceId) {
   let upload;
   try {
@@ -1514,6 +1559,13 @@ const server = http.createServer(async (request, response) => {
     }
     if (request.method === "GET" && parsedUrl.pathname === "/api/v1/admin/metrics") {
       await adminMetrics(request, response);
+      return;
+    }
+    if (
+      request.method === "POST" &&
+      parsedUrl.pathname === "/api/v1/admin/capacity/resume"
+    ) {
+      await adminResumeCapacity(request, response);
       return;
     }
     const adminAlertReemitMatch = parsedUrl.pathname.match(
@@ -1786,7 +1838,7 @@ const server = http.createServer(async (request, response) => {
     }
     const sourceId = await authenticate(request, response);
     if (!sourceId) return;
-    if (isIngestion && await isMaintenanceActive()) {
+    if (isIngestion && await isIngestionPaused()) {
       errorResponse(response, 503, "maintenance", "Ingestion is temporarily paused", {
         "retry-after": "60",
       });
