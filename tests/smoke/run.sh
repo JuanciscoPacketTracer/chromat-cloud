@@ -22,6 +22,8 @@ Optional environment:
                  Explicitly allow self-signed certificates for local-only runs
   SMOKE_TESTS    Comma-separated scenarios or "all"
                  ingestion,processing,inference,admin-auth,source-management
+  SMOKE_SOURCE_ID
+                 Dedicated test source to clean after event scenarios
 EOF
 }
 
@@ -55,6 +57,41 @@ if [[ "$selected_tests" == "all" ]]; then
 fi
 
 IFS=',' read -r -a tests <<<"$selected_tests"
+needs_source_cleanup=false
+for test_name in "${tests[@]}"; do
+  if [[ "$test_name" == "ingestion" || "$test_name" == "processing" || "$test_name" == "inference" ]]; then
+    needs_source_cleanup=true
+  fi
+done
+if [[ "$needs_source_cleanup" == true ]]; then
+  : "${SMOKE_SOURCE_ID:?SMOKE_SOURCE_ID is required for event scenarios}"
+  : "${ADMIN_USERNAME:?ADMIN_USERNAME is required for source cleanup}"
+  : "${ADMIN_PASSWORD:?ADMIN_PASSWORD is required for source cleanup}"
+fi
+
+cleanup_source() {
+  local exit_status=$?
+  if [[ "$needs_source_cleanup" != true ]]; then
+    return "$exit_status"
+  fi
+  local cookie_file login_body csrf_token cookie_header
+  cookie_file="$(mktemp)"
+  login_body="$(mktemp)"
+  trap 'rm -f "$cookie_file" "$login_body"' RETURN
+  smoke_curl --silent --show-error --fail \
+    -c "$cookie_file" -o "$login_body" \
+    -H "content-type: application/json" \
+    -d "{\"username\":\"$ADMIN_USERNAME\",\"password\":\"$ADMIN_PASSWORD\"}" \
+    "$base_url/api/v1/admin/login" >/dev/null
+  csrf_token="$(node -e 'const fs=require("fs"); process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1])).csrf_token)' "$login_body")"
+  cookie_header="$(awk '$6 == "chromat_session" { print $6 "=" $7 }' "$cookie_file")"
+  smoke_curl --silent --show-error --fail \
+    -H "Cookie: $cookie_header" -H "X-CSRF-Token: $csrf_token" \
+    -X POST "$base_url/api/v1/admin/sources/$SMOKE_SOURCE_ID/cleanup" >/dev/null
+  return "$exit_status"
+}
+trap cleanup_source EXIT
+
 for test_name in "${tests[@]}"; do
   case "$test_name" in
     ingestion)

@@ -34,6 +34,13 @@ old_key="$(node -e 'const fs=require("fs"); process.stdout.write(JSON.parse(fs.r
 test_source_body="$(create_source "smoke-test-$run_suffix" true)"
 test_source_id="$(node -e 'const fs=require("fs"); process.stdout.write(JSON.parse(fs.readFileSync(0)).source_id)' <<<"$test_source_body")"
 
+cleanup() {
+  smoke_curl --silent --show-error --fail \
+    -H "Cookie: $cookie_header" -H "X-CSRF-Token: $csrf_token" \
+    -X POST "$base_url/api/v1/admin/sources/$test_source_id/cleanup" >/dev/null
+}
+trap 'cleanup; rm -f "$cookie_file" "$login_body" "$response_body"' EXIT
+
 rotate_body="$(
   smoke_curl --silent --show-error --fail \
     -H "Cookie: $cookie_header" -H "X-CSRF-Token: $csrf_token" \
@@ -73,7 +80,7 @@ smoke_curl --silent --show-error --fail \
 
 producer_cookie="$(mktemp)"
 producer_login_body="$(mktemp)"
-trap 'rm -f "$cookie_file" "$login_body" "$response_body" "$producer_cookie" "$producer_login_body"' EXIT
+trap 'cleanup; rm -f "$cookie_file" "$login_body" "$response_body" "$producer_cookie" "$producer_login_body"' EXIT
 smoke_curl --silent --show-error --fail \
   -c "$producer_cookie" -o "$producer_login_body" \
   -H 'content-type: application/json' \

@@ -585,6 +585,81 @@ async function adminUpdateSource(request, response, sourceId) {
   sendJson(response, 200, { source_id: sourceId, updated: true });
 }
 
+async function adminCleanupTestSource(request, response, sourceId) {
+  const session = await adminSessionWithCsrf(request, response);
+  if (!session) return;
+  const connection = await pool.getConnection();
+  let rawPaths = [];
+  try {
+    const [sources] = await connection.query(
+      "SELECT is_test FROM monitoring_sources WHERE source_id = ?",
+      [sourceId],
+    );
+    if (sources.length !== 1) {
+      errorResponse(response, 404, "not_found", "Source not found");
+      return;
+    }
+    if (!sources[0].is_test) {
+      errorResponse(response, 409, "test_source_required", "Only test sources can be cleaned");
+      return;
+    }
+    const [rawFiles] = await connection.query(
+      "SELECT storage_path FROM raw_files WHERE source_id = ? AND storage_path IS NOT NULL",
+      [sourceId],
+    );
+    rawPaths = rawFiles.map((file) => file.storage_path);
+    await connection.beginTransaction();
+    const [producerRows] = await connection.query(
+      "SELECT producer_id FROM producer_source_assignments WHERE source_id = ?",
+      [sourceId],
+    );
+    const producerIds = producerRows.map((row) => row.producer_id);
+    if (producerIds.length > 0) {
+      await connection.query(
+        "DELETE FROM producer_sessions WHERE producer_id IN (?)",
+        [producerIds],
+      );
+    }
+    await connection.query(
+      "DELETE FROM producer_source_assignments WHERE source_id = ?",
+      [sourceId],
+    );
+    if (producerIds.length > 0) {
+      await connection.query(
+        "DELETE FROM producer_accounts WHERE producer_id IN (?)",
+        [producerIds],
+      );
+    }
+    await connection.query("DELETE FROM monitoring_source_alerts WHERE source_id = ?", [sourceId]);
+    await connection.query("DELETE FROM monitoring_states WHERE source_id = ?", [sourceId]);
+    await connection.query("DELETE FROM analysis_runs WHERE source_id = ?", [sourceId]);
+    await connection.query("DELETE FROM jobs WHERE source_id = ?", [sourceId]);
+    await connection.query("DELETE FROM raw_files WHERE source_id = ?", [sourceId]);
+    await connection.query("DELETE FROM monitoring_events WHERE source_id = ?", [sourceId]);
+    await connection.query("DELETE FROM monitoring_source_keys WHERE source_id = ?", [sourceId]);
+    await connection.query("DELETE FROM monitoring_sources WHERE source_id = ?", [sourceId]);
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+  for (const storagePath of rawPaths) {
+    const absolutePath = path.resolve(rawRoot, storagePath);
+    if (!absolutePath.startsWith(`${path.resolve(rawRoot)}${path.sep}`)) {
+      throw new Error("invalid_raw_storage_path");
+    }
+    try {
+      await fsp.unlink(absolutePath);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+  await audit("test_source_cleaned", request, session.operator_id, { source_id: sourceId });
+  sendJson(response, 200, { source_id: sourceId, cleaned: true });
+}
+
 async function adminRotateSourceKey(request, response, sourceId) {
   const session = await adminSessionWithCsrf(request, response);
   if (!session) return;
@@ -1277,6 +1352,21 @@ const server = http.createServer(async (request, response) => {
         await adminRotateSourceKey(request, response, sourceId);
         return;
       }
+    }
+    const sourceCleanupMatch = parsedUrl.pathname.match(
+      /^\/api\/v1\/admin\/sources\/([0-9a-f-]{36})\/cleanup$/i,
+    );
+    if (
+      request.method === "POST" &&
+      sourceCleanupMatch &&
+      isUuidV4(sourceCleanupMatch[1])
+    ) {
+      await adminCleanupTestSource(
+        request,
+        response,
+        sourceCleanupMatch[1].toLowerCase(),
+      );
+      return;
     }
     const adminSourceEventsMatch = parsedUrl.pathname.match(
       /^\/api\/v1\/admin\/sources\/([0-9a-f-]{36})\/events$/i,
