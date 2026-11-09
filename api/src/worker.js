@@ -273,12 +273,29 @@ async function completeJob(job, results, startedAt) {
       aggregationConfig,
     );
     if (!result.accepted) return;
-    await connection.query(
-      `INSERT IGNORE INTO aggregation_rule_versions
-        (rule_version, configuration, created_at)
-       VALUES (?, ?, UTC_TIMESTAMP(3))`,
-      [aggregationConfig.ruleVersion, JSON.stringify(aggregationConfig)],
+    const configurationJson = JSON.stringify(aggregationConfig);
+    const [ruleRows] = await connection.query(
+      `SELECT configuration
+         FROM aggregation_rule_versions
+        WHERE rule_version = ?
+        FOR UPDATE`,
+      [aggregationConfig.ruleVersion],
     );
+    if (ruleRows.length > 0) {
+      const storedConfiguration = typeof ruleRows[0].configuration === "string"
+        ? JSON.parse(ruleRows[0].configuration)
+        : ruleRows[0].configuration;
+      if (JSON.stringify(storedConfiguration) !== configurationJson) {
+        throw new Error("aggregation_rule_version_mismatch");
+      }
+    } else {
+      await connection.query(
+        `INSERT INTO aggregation_rule_versions
+          (rule_version, configuration, created_at)
+         VALUES (?, ?, UTC_TIMESTAMP(3))`,
+        [aggregationConfig.ruleVersion, configurationJson],
+      );
+    }
     await connection.query(
       `INSERT INTO monitoring_states
         (source_id, crop, current_stage, episode_seq, consecutive_stage,

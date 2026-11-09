@@ -1,3 +1,4 @@
+-- Compatible with API 0.1.x; additive migration for the previous worker.
 ALTER TABLE monitoring_states
   ADD COLUMN aggregation_rule_version VARCHAR(32) NOT NULL DEFAULT "1",
   ADD COLUMN aggregation_config JSON NULL;
