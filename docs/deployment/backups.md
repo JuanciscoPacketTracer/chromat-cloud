@@ -10,6 +10,7 @@ con al menos siete copias recuperables.
 - El operador ejecuta un backup **diario** en la zona horaria
   `America/Mazatlan`; los nombres internos del script usan UTC para evitar
   ambigüedad durante cambios de horario.
+- La retención inicial es de **14 días** de backups diarios.
 - Se conservan al menos **siete backups completos o cadenas recuperables**.
   Un incremental solo cuenta si conserva su backup completo base y todos los
   incrementales necesarios.
@@ -137,9 +138,11 @@ find /mnt/chromat-backups -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort
 cat /srv/chromat/backups/last-successful
 ```
 
-Solo después de verificar una copia nueva se pueden retirar copias que estén
-por encima de la retención. Nunca se borran las últimas siete recuperables, la
-copia externa de la promoción activa ni un full que sea base de incrementales.
+Solo después de verificar una copia nueva se pueden retirar copias diarias con
+más de 14 días, siempre que sigan existiendo al menos siete copias o cadenas
+recuperables. Nunca se borran la copia externa de la promoción activa ni un
+full que sea base de incrementales; si conservar una base antigua es necesario,
+queda fuera del corte de 14 días hasta que la cadena se compacte con otro full.
 
 Al menos trimestralmente, después de cambios importantes y antes de una entrega
 del proyecto, se ejecuta una restauración aislada completa y se conserva la
