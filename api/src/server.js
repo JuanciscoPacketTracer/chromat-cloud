@@ -73,6 +73,58 @@ function parseJsonBody(request) {
   });
 }
 
+async function listSourceEvents(response, sourceId) {
+  const [rows] = await pool.query(
+    `SELECT e.event_id, e.occurred_at, e.received_at, e.processed_at,
+            e.clock_suspect, e.status, e.crop, e.derived_data,
+            ar.run_id, ar.algorithm, ar.algorithm_version, ar.model_version,
+            ar.model_sha256, ar.started_at, ar.completed_at, ar.result
+       FROM monitoring_events e
+       LEFT JOIN analysis_runs ar ON ar.run_id = e.current_result_run_id
+      WHERE e.source_id = ?
+      ORDER BY e.occurred_at DESC
+      LIMIT 100`,
+    [sourceId],
+  );
+  sendJson(response, 200, {
+    events: rows.map((event) => ({
+      event_id: event.event_id,
+      occurred_at: mysqlToIso(event.occurred_at),
+      received_at: mysqlToIso(event.received_at),
+      processed_at: event.processed_at ? mysqlToIso(event.processed_at) : null,
+      clock_suspect: Boolean(event.clock_suspect),
+      status: event.status,
+      crop: event.crop,
+      current_result: event.run_id
+        ? {
+            run_id: Number(event.run_id),
+            algorithm: event.algorithm,
+            algorithm_version: event.algorithm_version,
+            model_version: event.model_version,
+            model_sha256: event.model_sha256,
+            started_at: mysqlToIso(event.started_at),
+            completed_at: mysqlToIso(event.completed_at),
+            result: event.result,
+          }
+        : null,
+    })),
+  });
+}
+
+async function adminListSourceEvents(request, response, sourceId) {
+  const session = await authenticateAdmin(request, response);
+  if (!session) return;
+  const [sources] = await pool.query(
+    "SELECT 1 FROM monitoring_sources WHERE source_id = ? LIMIT 1",
+    [sourceId],
+  );
+  if (sources.length !== 1) {
+    errorResponse(response, 404, "not_found", "Source not found");
+    return;
+  }
+  await listSourceEvents(response, sourceId);
+}
+
 async function audit(action, request, operatorId = null, metadata = null) {
   await pool.query(
     `INSERT INTO audit_log
@@ -631,6 +683,19 @@ async function producerLogin(request, response) {
   });
 }
 
+async function producerLogout(request, response) {
+  const session = await authenticateProducer(request, response);
+  if (!session) return;
+  await pool.query(
+    "UPDATE producer_sessions SET revoked_at = UTC_TIMESTAMP(3) WHERE session_id = ?",
+    [session.session_id],
+  );
+  response.writeHead(204, {
+    "set-cookie": "chromat_producer=; Max-Age=0; Path=/api/v1/producer; Secure; HttpOnly; SameSite=Strict",
+  });
+  response.end();
+}
+
 async function producerSources(request, response) {
   const session = await authenticateProducer(request, response);
   if (!session) return;
@@ -1151,6 +1216,21 @@ const server = http.createServer(async (request, response) => {
         return;
       }
     }
+    const adminSourceEventsMatch = parsedUrl.pathname.match(
+      /^\/api\/v1\/admin\/sources\/([0-9a-f-]{36})\/events$/i,
+    );
+    if (
+      request.method === "GET" &&
+      adminSourceEventsMatch &&
+      isUuidV4(adminSourceEventsMatch[1])
+    ) {
+      await adminListSourceEvents(
+        request,
+        response,
+        adminSourceEventsMatch[1].toLowerCase(),
+      );
+      return;
+    }
     if (request.method === "POST" && parsedUrl.pathname === "/api/v1/admin/producers") {
       await adminCreateProducer(request, response);
       return;
@@ -1159,8 +1239,35 @@ const server = http.createServer(async (request, response) => {
       await producerLogin(request, response);
       return;
     }
+    if (request.method === "POST" && parsedUrl.pathname === "/api/v1/producer/logout") {
+      await producerLogout(request, response);
+      return;
+    }
     if (request.method === "GET" && parsedUrl.pathname === "/api/v1/producer/sources") {
       await producerSources(request, response);
+      return;
+    }
+    const producerSourceEventsMatch = parsedUrl.pathname.match(
+      /^\/api\/v1\/producer\/sources\/([0-9a-f-]{36})\/events$/i,
+    );
+    if (
+      request.method === "GET" &&
+      producerSourceEventsMatch &&
+      isUuidV4(producerSourceEventsMatch[1])
+    ) {
+      const session = await authenticateProducer(request, response);
+      if (!session) return;
+      const sourceId = producerSourceEventsMatch[1].toLowerCase();
+      const [assignment] = await pool.query(
+        `SELECT 1 FROM producer_source_assignments
+          WHERE producer_id = ? AND source_id = ? AND permission = 'read'`,
+        [session.producer_id, sourceId],
+      );
+      if (assignment.length !== 1) {
+        errorResponse(response, 404, "not_found", "Source not found");
+        return;
+      }
+      await listSourceEvents(response, sourceId);
       return;
     }
     const producerEventMatch = parsedUrl.pathname.match(

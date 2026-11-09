@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CHROMAT Server</title>
+    <link rel="stylesheet" href="/panel/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header>
+        <p class="eyebrow">CHROMAT Server</p>
+        <h1>Panel de monitoreo</h1>
+        <p class="muted">Consulta el estado de tus Fuentes de monitoreo y Eventos de monitoreo.</p>
+      </header>
+
+      <section id="login-view" class="card">
+        <div class="tabs" role="tablist" aria-label="Tipo de acceso">
+          <button class="tab active" data-role="operator" type="button">Operador</button>
+          <button class="tab" data-role="producer" type="button">Productor</button>
+        </div>
+        <form id="login-form">
+          <label>
+            Usuario
+            <input id="username" name="username" autocomplete="username" required>
+          </label>
+          <label>
+            Contraseña
+            <input id="password" name="password" type="password" autocomplete="current-password" required>
+          </label>
+          <button type="submit">Iniciar sesión</button>
+          <p id="login-error" class="error" role="alert" hidden></p>
+        </form>
+      </section>
+
+      <section id="dashboard-view" hidden>
+        <div class="toolbar">
+          <div>
+            <h2 id="dashboard-title"></h2>
+            <p id="dashboard-subtitle" class="muted"></p>
+          </div>
+          <button id="logout" class="secondary" type="button">Cerrar sesión</button>
+        </div>
+        <div id="sources" class="source-grid"></div>
+        <section id="events-panel" class="card" hidden>
+          <h2>Eventos de monitoreo</h2>
+          <div id="events"></div>
+        </section>
+        <p id="dashboard-error" class="error" role="alert" hidden></p>
+      </section>
+    </main>
+    <script type="module" src="/panel/app.js"></script>
+  </body>
+</html>
