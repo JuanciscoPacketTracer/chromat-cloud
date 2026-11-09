@@ -16,6 +16,7 @@ const maxUploadBytes = Number.parseInt(
   10,
 );
 const rawRoot = process.env.RAW_DATA_DIR ?? "/app/uploads";
+const maintenanceMarker = path.join(rawRoot, ".maintenance");
 const pool = mysql.createPool({
   host: process.env.DB_HOST ?? "db",
   port: Number.parseInt(process.env.DB_PORT ?? "3306", 10),
@@ -859,6 +860,16 @@ async function ingestEvent(request, response, sourceId) {
     if (!isUuidV4(metadata.event_id)) {
       throw Object.assign(new Error("invalid_event_id"), { statusCode: 422 });
     }
+
+    async function isMaintenanceActive() {
+      try {
+        await fsp.access(maintenanceMarker, fs.constants.F_OK);
+        return true;
+      } catch (error) {
+        if (error.code === "ENOENT") return false;
+        throw error;
+      }
+    }
     const occurredAt = parseTimestamp(metadata.occurred_at);
     if (!occurredAt) {
       throw Object.assign(new Error("invalid_occurred_at"), { statusCode: 422 });
@@ -1201,6 +1212,12 @@ const server = http.createServer(async (request, response) => {
     }
     const sourceId = await authenticate(request, response);
     if (!sourceId) return;
+    if (isIngestion && await isMaintenanceActive()) {
+      errorResponse(response, 503, "maintenance", "Ingestion is temporarily paused", {
+        "retry-after": "60",
+      });
+      return;
+    }
     if (isIngestion) {
       await ingestEvent(request, response, sourceId);
     } else if (isUuidV4(eventMatch[1])) {

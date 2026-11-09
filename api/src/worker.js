@@ -20,6 +20,7 @@ if (!["hsv", "cnn"].includes(officialAlgorithm)) {
 }
 const workerId = `${process.env.HOSTNAME ?? "worker"}-${crypto.randomUUID()}`;
 const rawRoot = process.env.RAW_DATA_DIR ?? "/app/uploads";
+const maintenanceMarker = `${rawRoot}/.maintenance`;
 const pool = mysql.createPool({
   host: process.env.DB_HOST ?? "db",
   port: Number.parseInt(process.env.DB_PORT ?? "3306", 10),
@@ -33,6 +34,12 @@ const pool = mysql.createPool({
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 async function claimJob() {
+  try {
+    await fs.access(maintenanceMarker);
+    return null;
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();

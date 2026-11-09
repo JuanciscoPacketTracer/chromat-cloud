@@ -42,6 +42,8 @@ services:
       DB_PASSWORD: ${DB_PASSWORD}
       RAW_DATA_DIR: ${RAW_DATA_DIR}
       UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES}
+      RAW_RETENTION_DAYS: ${RAW_RETENTION_DAYS}
+      DERIVED_RETENTION_DAYS: ${DERIVED_RETENTION_DAYS}
       TZ: ${TZ}
     volumes:
       - raw_data:/app/uploads

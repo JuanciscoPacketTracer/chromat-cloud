@@ -9,7 +9,8 @@
   "scripts": {
     "start": "node src/server.js",
     "create-source": "node src/create-source.js",
-    "create-operator": "node src/create-operator.js"
+    "create-operator": "node src/create-operator.js",
+    "retention": "node src/retention.js"
   },
   "dependencies": {
     "argon2": "0.41.1",
