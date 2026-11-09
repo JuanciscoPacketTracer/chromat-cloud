@@ -90,6 +90,11 @@ async function deleteDerivedData() {
       WHERE occurred_at < DATE_SUB(UTC_TIMESTAMP(3), INTERVAL ? DAY)`,
     [derivedRetentionDays],
   );
+  await pool.query(
+    `DELETE FROM monitoring_alerts
+      WHERE created_at < DATE_SUB(UTC_TIMESTAMP(3), INTERVAL ? DAY)`,
+    [derivedRetentionDays],
+  );
   return result.affectedRows;
 }
 

@@ -18,6 +18,8 @@ fail() {
 [[ -f db/migrations/002_processing.sql ]] || fail "processing migration is missing"
 [[ -f db/migrations/004_admin_auth.sql ]] || fail "admin migration is missing"
 [[ -f db/migrations/006_source_access.sql ]] || fail "source access migration is missing"
+[[ -f db/migrations/011_aggregated_state_history.sql ]] || fail "aggregated history migration is missing"
+[[ -f db/migrations/012_alerts.sql ]] || fail "alerts migration is missing"
 [[ -f api/src/worker.js ]] || fail "worker is missing"
 [[ -f api/src/create-operator.js ]] || fail "operator command is missing"
 [[ -f inference/server.py ]] || fail "inference service is missing"
@@ -27,6 +29,8 @@ fail() {
 [[ -f tests/smoke/inference.sh ]] || fail "inference smoke test is missing"
 [[ -f tests/smoke/admin-auth.sh ]] || fail "admin auth smoke test is missing"
 [[ -f tests/smoke/source-management.sh ]] || fail "source management smoke test is missing"
+[[ -x tests/smoke/run.sh ]] || fail "smoke test runner is missing or not executable"
+[[ -f tests/smoke/curl.sh ]] || fail "smoke curl helper is missing"
 [[ -f scripts/dev-tls.sh ]] || fail "development TLS script is missing"
 
 compose_config="$(mktemp)"

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/curl.sh"
 
 base_url="${BASE_URL:-https://localhost}"
-api_key="${SOURCE_API_KEY:?SOURCE_API_KEY is required}"
+api_key="${SMOKE_SOURCE_API_KEY:?SMOKE_SOURCE_API_KEY is required}"
 event_id="$(node -e 'console.log(crypto.randomUUID())')"
 occurred_at="$(node -e 'console.log(new Date().toISOString())')"
 image_file="$(mktemp)"
@@ -13,7 +14,7 @@ base64 --decode >"$image_file" <<'PNG'
 iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=
 PNG
 
-curl --silent --show-error --fail-with-body --insecure \
+smoke_curl --silent --show-error --fail-with-body \
   -o "$response_body" \
   -X POST "$base_url/api/v1/events" \
   -H "Authorization: Bearer $api_key" \
@@ -22,7 +23,7 @@ curl --silent --show-error --fail-with-body --insecure \
 
 processing_seen=false
 for _ in $(seq 1 30); do
-  status_body="$(curl --silent --show-error --fail-with-body --insecure \
+  status_body="$(smoke_curl --silent --show-error --fail-with-body \
     "$base_url/api/v1/events/$event_id" \
     -H "Authorization: Bearer $api_key")"
   if grep -q '"status":"processing"' <<<"$status_body"; then
@@ -41,7 +42,7 @@ done
 }
 
 for _ in $(seq 1 30); do
-  status_body="$(curl --silent --show-error --fail-with-body --insecure \
+  status_body="$(smoke_curl --silent --show-error --fail-with-body \
     "$base_url/api/v1/events/$event_id" \
     -H "Authorization: Bearer $api_key")"
   if grep -q '"status":"completed"' <<<"$status_body"; then

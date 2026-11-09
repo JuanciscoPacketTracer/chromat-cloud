@@ -1,5 +1,5 @@
 {
   "version": "deterministic-1",
-  "classes": ["green", "yellow", "other"],
+  "classes": ["verde", "maduro", "otro"],
   "seed": "chromat-cnn-contract"
 }

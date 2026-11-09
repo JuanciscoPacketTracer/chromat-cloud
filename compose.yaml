@@ -89,6 +89,11 @@ services:
       INFERENCE_MODEL_VERSION: ${INFERENCE_MODEL_VERSION}
       INFERENCE_MODEL_SHA256: ${INFERENCE_MODEL_SHA256}
       OFFICIAL_ALGORITHM: ${OFFICIAL_ALGORITHM}
+      AGGREGATION_RULE_VERSION: ${AGGREGATION_RULE_VERSION}
+      AGGREGATION_CONFIDENCE_THRESHOLD: ${AGGREGATION_CONFIDENCE_THRESHOLD}
+      AGGREGATION_CONSECUTIVE_EVENTS: ${AGGREGATION_CONSECUTIVE_EVENTS}
+      AGGREGATION_MAX_EVENT_AGE_MS: ${AGGREGATION_MAX_EVENT_AGE_MS}
+      AGGREGATION_MIN_ALERT_INTERVAL_MS: ${AGGREGATION_MIN_ALERT_INTERVAL_MS}
       TZ: ${TZ}
     volumes:
       - raw_data:/app/uploads
@@ -99,6 +104,35 @@ services:
       db:
         condition: service_healthy
       inference:
+        condition: service_healthy
+
+  telegram-worker:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+      platforms:
+        - linux/amd64
+    image: chromat-api:dev
+    command: ["node", "src/telegram-worker.js"]
+    environment:
+      DB_HOST: db
+      DB_PORT: ${DB_PORT}
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
+      PANEL_URL: ${PANEL_URL}
+      ALERT_POLL_MS: ${ALERT_POLL_MS}
+      ALERT_LEASE_SECONDS: ${ALERT_LEASE_SECONDS}
+      TZ: ${TZ}
+    volumes:
+      - ./db/migrations:/app/migrations:ro
+      - ${TELEGRAM_BOT_TOKEN_HOST_FILE}:/run/secrets/telegram_bot_token:ro
+    networks:
+      - internal
+      - edge
+    depends_on:
+      db:
         condition: service_healthy
 
   inference:
@@ -134,6 +168,7 @@ services:
       - "443:443"
     volumes:
       - ./nginx/conf.d/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./web/public:/usr/share/nginx/html:ro
       - ./certs/dev/server.crt:/etc/nginx/tls/server.crt:ro
       - ./certs/dev/server.key:/etc/nginx/tls/server.key:ro
     networks:

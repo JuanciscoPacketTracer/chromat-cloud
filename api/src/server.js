@@ -73,6 +73,168 @@ function parseJsonBody(request) {
   });
 }
 
+async function listSourceEvents(response, sourceId) {
+  const [rows] = await pool.query(
+    `SELECT e.event_id, e.occurred_at, e.received_at, e.processed_at,
+            e.clock_suspect, e.status, e.crop, e.derived_data,
+            ar.run_id, ar.algorithm, ar.algorithm_version, ar.model_version,
+            ar.model_sha256, ar.started_at, ar.completed_at, ar.result
+       FROM monitoring_events e
+       LEFT JOIN analysis_runs ar ON ar.run_id = e.current_result_run_id
+      WHERE e.source_id = ?
+      ORDER BY e.occurred_at DESC
+      LIMIT 100`,
+    [sourceId],
+  );
+  sendJson(response, 200, {
+    events: rows.map((event) => ({
+      event_id: event.event_id,
+      occurred_at: mysqlToIso(event.occurred_at),
+      received_at: mysqlToIso(event.received_at),
+      processed_at: event.processed_at ? mysqlToIso(event.processed_at) : null,
+      clock_suspect: Boolean(event.clock_suspect),
+      status: event.status,
+      crop: event.crop,
+      current_result: event.run_id
+        ? {
+            run_id: Number(event.run_id),
+            algorithm: event.algorithm,
+            algorithm_version: event.algorithm_version,
+            model_version: event.model_version,
+            model_sha256: event.model_sha256,
+            started_at: mysqlToIso(event.started_at),
+            completed_at: mysqlToIso(event.completed_at),
+            result: event.result,
+          }
+        : null,
+    })),
+  });
+}
+
+async function adminListSourceEvents(request, response, sourceId) {
+  const session = await authenticateAdmin(request, response);
+  if (!session) return;
+  const [sources] = await pool.query(
+    "SELECT 1 FROM monitoring_sources WHERE source_id = ? LIMIT 1",
+    [sourceId],
+  );
+  if (sources.length !== 1) {
+    errorResponse(response, 404, "not_found", "Source not found");
+    return;
+  }
+  await listSourceEvents(response, sourceId);
+}
+
+async function listSourceState(response, sourceId) {
+  const [rows] = await pool.query(
+    `SELECT source_id, crop, current_stage, episode_seq, consecutive_stage,
+            consecutive_count, last_occurred_at, last_confidence,
+            aggregation_rule_version, aggregation_config, updated_at
+       FROM monitoring_states
+      WHERE source_id = ?
+      ORDER BY crop`,
+    [sourceId],
+  );
+  sendJson(response, 200, {
+    states: rows.map((state) => ({
+      source_id: state.source_id,
+      crop: state.crop,
+      current_stage: state.current_stage,
+      episode_seq: Number(state.episode_seq),
+      consecutive_stage: state.consecutive_stage,
+      consecutive_count: Number(state.consecutive_count),
+      last_occurred_at: state.last_occurred_at
+        ? mysqlToIso(state.last_occurred_at)
+        : null,
+      last_confidence: state.last_confidence == null
+        ? null
+        : Number(state.last_confidence),
+      aggregation_rule_version: state.aggregation_rule_version,
+      aggregation_config: typeof state.aggregation_config === "string"
+        ? JSON.parse(state.aggregation_config)
+        : state.aggregation_config,
+      updated_at: mysqlToIso(state.updated_at),
+    })),
+  });
+}
+
+async function listSourceStateHistory(response, sourceId, crop, limit) {
+  const values = [sourceId];
+  const filters = ["source_id = ?"];
+  if (crop) {
+    filters.push("crop = ?");
+    values.push(crop);
+  }
+  values.push(limit);
+  const [rows] = await pool.query(
+    `SELECT history_id, source_id, crop, event_id, occurred_at,
+            classification, confidence, consecutive_stage, consecutive_count,
+            current_stage, episode_seq, transition, created_at
+       FROM monitoring_state_history
+      WHERE ${filters.join(" AND ")}
+      ORDER BY occurred_at DESC, history_id DESC
+      LIMIT ?`,
+    values,
+  );
+  sendJson(response, 200, {
+    history: rows.map((entry) => ({
+      history_id: Number(entry.history_id),
+      source_id: entry.source_id,
+      crop: entry.crop,
+      event_id: entry.event_id,
+      occurred_at: mysqlToIso(entry.occurred_at),
+      classification: entry.classification,
+      confidence: Number(entry.confidence),
+      consecutive_stage: entry.consecutive_stage,
+      consecutive_count: Number(entry.consecutive_count),
+      current_stage: entry.current_stage,
+      episode_seq: Number(entry.episode_seq),
+      transition: typeof entry.transition === "string"
+        ? JSON.parse(entry.transition)
+        : entry.transition,
+      created_at: mysqlToIso(entry.created_at),
+    })),
+  });
+}
+
+function parseHistoryLimit(parsedUrl) {
+  const rawLimit = Number.parseInt(parsedUrl.searchParams.get("limit") ?? "100", 10);
+  return Number.isInteger(rawLimit) ? Math.min(Math.max(rawLimit, 1), 100) : 100;
+}
+
+async function adminListSourceState(request, response, sourceId) {
+  const session = await authenticateAdmin(request, response);
+  if (!session) return;
+  const [sources] = await pool.query(
+    "SELECT 1 FROM monitoring_sources WHERE source_id = ? LIMIT 1",
+    [sourceId],
+  );
+  if (sources.length !== 1) {
+    errorResponse(response, 404, "not_found", "Source not found");
+    return;
+  }
+  await listSourceState(response, sourceId);
+}
+
+async function adminListSourceStateHistory(request, response, sourceId, parsedUrl) {
+  const session = await authenticateAdmin(request, response);
+  if (!session) return;
+  const [sources] = await pool.query(
+    "SELECT 1 FROM monitoring_sources WHERE source_id = ? LIMIT 1",
+    [sourceId],
+  );
+  if (sources.length !== 1) {
+    errorResponse(response, 404, "not_found", "Source not found");
+    return;
+  }
+  await listSourceStateHistory(
+    response,
+    sourceId,
+    parsedUrl.searchParams.get("crop"),
+    parseHistoryLimit(parsedUrl),
+  );
+}
+
 async function audit(action, request, operatorId = null, metadata = null) {
   await pool.query(
     `INSERT INTO audit_log
@@ -486,6 +648,103 @@ async function adminUpdateSource(request, response, sourceId) {
   sendJson(response, 200, { source_id: sourceId, updated: true });
 }
 
+async function adminCleanupTestSource(request, response, sourceId) {
+  const session = await adminSessionWithCsrf(request, response);
+  if (!session) return;
+  const connection = await pool.getConnection();
+  let rawPaths = [];
+  try {
+    const [sources] = await connection.query(
+      "SELECT is_test FROM monitoring_sources WHERE source_id = ?",
+      [sourceId],
+    );
+    if (sources.length !== 1) {
+      errorResponse(response, 404, "not_found", "Source not found");
+      return;
+    }
+    if (!sources[0].is_test) {
+      errorResponse(response, 409, "test_source_required", "Only test sources can be cleaned");
+      return;
+    }
+    const [rawFiles] = await connection.query(
+      "SELECT storage_path FROM raw_files WHERE source_id = ? AND storage_path IS NOT NULL",
+      [sourceId],
+    );
+    rawPaths = rawFiles.map((file) => file.storage_path);
+    await connection.beginTransaction();
+    const [producerRows] = await connection.query(
+      "SELECT producer_id FROM producer_source_assignments WHERE source_id = ?",
+      [sourceId],
+    );
+    const producerIds = producerRows.map((row) => row.producer_id);
+    if (producerIds.length > 0) {
+      await connection.query(
+        "DELETE FROM producer_sessions WHERE producer_id IN (?)",
+        [producerIds],
+      );
+    }
+    await connection.query(
+      "DELETE FROM producer_source_assignments WHERE source_id = ?",
+      [sourceId],
+    );
+    if (producerIds.length > 0) {
+      await connection.query(
+        "DELETE FROM producer_accounts WHERE producer_id IN (?)",
+        [producerIds],
+      );
+    }
+    await connection.query("DELETE FROM monitoring_source_alerts WHERE source_id = ?", [sourceId]);
+    await connection.query("DELETE FROM monitoring_alerts WHERE source_id = ?", [sourceId]);
+    await connection.query("DELETE FROM monitoring_states WHERE source_id = ?", [sourceId]);
+    await connection.query("DELETE FROM monitoring_state_history WHERE source_id = ?", [sourceId]);
+    await connection.query("DELETE FROM analysis_runs WHERE source_id = ?", [sourceId]);
+    await connection.query("DELETE FROM jobs WHERE source_id = ?", [sourceId]);
+    await connection.query("DELETE FROM raw_files WHERE source_id = ?", [sourceId]);
+    await connection.query("DELETE FROM monitoring_events WHERE source_id = ?", [sourceId]);
+    await connection.query("DELETE FROM monitoring_source_keys WHERE source_id = ?", [sourceId]);
+    await connection.query("DELETE FROM monitoring_sources WHERE source_id = ?", [sourceId]);
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+  for (const storagePath of rawPaths) {
+    const absolutePath = path.resolve(rawRoot, storagePath);
+    if (!absolutePath.startsWith(`${path.resolve(rawRoot)}${path.sep}`)) {
+      throw new Error("invalid_raw_storage_path");
+    }
+    try {
+      await fsp.unlink(absolutePath);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+  await audit("test_source_cleaned", request, session.operator_id, { source_id: sourceId });
+  sendJson(response, 200, { source_id: sourceId, cleaned: true });
+}
+
+async function adminReemitAlert(request, response, alertId) {
+  const session = await adminSessionWithCsrf(request, response);
+  if (!session) return;
+  const [result] = await pool.query(
+    `UPDATE monitoring_alerts
+        SET status = 'pending', attempts = 0, available_at = UTC_TIMESTAMP(3),
+            lease_owner = NULL, lease_expires_at = NULL, last_error = NULL
+      WHERE alert_id = ? AND status = 'failed'`,
+    [alertId],
+  );
+  if (result.affectedRows !== 1) {
+    errorResponse(response, 404, "not_found", "Failed alert not found");
+    return;
+  }
+  await audit("alert_reemitted", request, session.operator_id, {
+    alert_id: alertId,
+  });
+  sendJson(response, 200, { alert_id: alertId, status: "pending" });
+}
+
 async function adminRotateSourceKey(request, response, sourceId) {
   const session = await adminSessionWithCsrf(request, response);
   if (!session) return;
@@ -629,6 +888,19 @@ async function producerLogin(request, response) {
   sendJson(response, 200, { producer: { username: producer.username } }, {
     "set-cookie": `chromat_producer=${token}; Max-Age=28800; Path=/api/v1/producer; Secure; HttpOnly; SameSite=Strict`,
   });
+}
+
+async function producerLogout(request, response) {
+  const session = await authenticateProducer(request, response);
+  if (!session) return;
+  await pool.query(
+    "UPDATE producer_sessions SET revoked_at = UTC_TIMESTAMP(3) WHERE session_id = ?",
+    [session.session_id],
+  );
+  response.writeHead(204, {
+    "set-cookie": "chromat_producer=; Max-Age=0; Path=/api/v1/producer; Secure; HttpOnly; SameSite=Strict",
+  });
+  response.end();
 }
 
 async function producerSources(request, response) {
@@ -1112,6 +1384,16 @@ const server = http.createServer(async (request, response) => {
       await adminAudit(request, response);
       return;
     }
+    const adminAlertReemitMatch = parsedUrl.pathname.match(
+      /^\/api\/v1\/admin\/alerts\/([0-9]+)\/reemit$/,
+    );
+    if (
+      request.method === "POST" &&
+      adminAlertReemitMatch
+    ) {
+      await adminReemitAlert(request, response, Number(adminAlertReemitMatch[1]));
+      return;
+    }
     const rawDownloadMatch = parsedUrl.pathname.match(
       /^\/api\/v1\/admin\/sources\/([0-9a-f-]{36})\/events\/([0-9a-f-]{36})\/raw$/i,
     );
@@ -1137,6 +1419,37 @@ const server = http.createServer(async (request, response) => {
       await adminListSources(request, response);
       return;
     }
+    const adminSourceHistoryMatch = parsedUrl.pathname.match(
+      /^\/api\/v1\/admin\/sources\/([0-9a-f-]{36})\/state\/history$/i,
+    );
+    if (
+      request.method === "GET" &&
+      adminSourceHistoryMatch &&
+      isUuidV4(adminSourceHistoryMatch[1])
+    ) {
+      await adminListSourceStateHistory(
+        request,
+        response,
+        adminSourceHistoryMatch[1].toLowerCase(),
+        parsedUrl,
+      );
+      return;
+    }
+    const adminSourceStateMatch = parsedUrl.pathname.match(
+      /^\/api\/v1\/admin\/sources\/([0-9a-f-]{36})\/state$/i,
+    );
+    if (
+      request.method === "GET" &&
+      adminSourceStateMatch &&
+      isUuidV4(adminSourceStateMatch[1])
+    ) {
+      await adminListSourceState(
+        request,
+        response,
+        adminSourceStateMatch[1].toLowerCase(),
+      );
+      return;
+    }
     const sourceAdminMatch = parsedUrl.pathname.match(
       /^\/api\/v1\/admin\/sources\/([0-9a-f-]{36})(?:\/(keys))?$/,
     );
@@ -1151,6 +1464,36 @@ const server = http.createServer(async (request, response) => {
         return;
       }
     }
+    const sourceCleanupMatch = parsedUrl.pathname.match(
+      /^\/api\/v1\/admin\/sources\/([0-9a-f-]{36})\/cleanup$/i,
+    );
+    if (
+      request.method === "POST" &&
+      sourceCleanupMatch &&
+      isUuidV4(sourceCleanupMatch[1])
+    ) {
+      await adminCleanupTestSource(
+        request,
+        response,
+        sourceCleanupMatch[1].toLowerCase(),
+      );
+      return;
+    }
+    const adminSourceEventsMatch = parsedUrl.pathname.match(
+      /^\/api\/v1\/admin\/sources\/([0-9a-f-]{36})\/events$/i,
+    );
+    if (
+      request.method === "GET" &&
+      adminSourceEventsMatch &&
+      isUuidV4(adminSourceEventsMatch[1])
+    ) {
+      await adminListSourceEvents(
+        request,
+        response,
+        adminSourceEventsMatch[1].toLowerCase(),
+      );
+      return;
+    }
     if (request.method === "POST" && parsedUrl.pathname === "/api/v1/admin/producers") {
       await adminCreateProducer(request, response);
       return;
@@ -1159,8 +1502,86 @@ const server = http.createServer(async (request, response) => {
       await producerLogin(request, response);
       return;
     }
+    if (request.method === "POST" && parsedUrl.pathname === "/api/v1/producer/logout") {
+      await producerLogout(request, response);
+      return;
+    }
     if (request.method === "GET" && parsedUrl.pathname === "/api/v1/producer/sources") {
       await producerSources(request, response);
+      return;
+    }
+    const producerSourceStateMatch = parsedUrl.pathname.match(
+      /^\/api\/v1\/producer\/sources\/([0-9a-f-]{36})\/state$/i,
+    );
+    if (
+      request.method === "GET" &&
+      producerSourceStateMatch &&
+      isUuidV4(producerSourceStateMatch[1])
+    ) {
+      const session = await authenticateProducer(request, response);
+      if (!session) return;
+      const sourceId = producerSourceStateMatch[1].toLowerCase();
+      const [assignment] = await pool.query(
+        `SELECT 1 FROM producer_source_assignments
+          WHERE producer_id = ? AND source_id = ? AND permission = 'read'`,
+        [session.producer_id, sourceId],
+      );
+      if (assignment.length !== 1) {
+        errorResponse(response, 404, "not_found", "Source not found");
+        return;
+      }
+      await listSourceState(response, sourceId);
+      return;
+    }
+    const producerSourceHistoryMatch = parsedUrl.pathname.match(
+      /^\/api\/v1\/producer\/sources\/([0-9a-f-]{36})\/state\/history$/i,
+    );
+    if (
+      request.method === "GET" &&
+      producerSourceHistoryMatch &&
+      isUuidV4(producerSourceHistoryMatch[1])
+    ) {
+      const session = await authenticateProducer(request, response);
+      if (!session) return;
+      const sourceId = producerSourceHistoryMatch[1].toLowerCase();
+      const [assignment] = await pool.query(
+        `SELECT 1 FROM producer_source_assignments
+          WHERE producer_id = ? AND source_id = ? AND permission = 'read'`,
+        [session.producer_id, sourceId],
+      );
+      if (assignment.length !== 1) {
+        errorResponse(response, 404, "not_found", "Source not found");
+        return;
+      }
+      await listSourceStateHistory(
+        response,
+        sourceId,
+        parsedUrl.searchParams.get("crop"),
+        parseHistoryLimit(parsedUrl),
+      );
+      return;
+    }
+    const producerSourceEventsMatch = parsedUrl.pathname.match(
+      /^\/api\/v1\/producer\/sources\/([0-9a-f-]{36})\/events$/i,
+    );
+    if (
+      request.method === "GET" &&
+      producerSourceEventsMatch &&
+      isUuidV4(producerSourceEventsMatch[1])
+    ) {
+      const session = await authenticateProducer(request, response);
+      if (!session) return;
+      const sourceId = producerSourceEventsMatch[1].toLowerCase();
+      const [assignment] = await pool.query(
+        `SELECT 1 FROM producer_source_assignments
+          WHERE producer_id = ? AND source_id = ? AND permission = 'read'`,
+        [session.producer_id, sourceId],
+      );
+      if (assignment.length !== 1) {
+        errorResponse(response, 404, "not_found", "Source not found");
+        return;
+      }
+      await listSourceEvents(response, sourceId);
       return;
     }
     const producerEventMatch = parsedUrl.pathname.match(

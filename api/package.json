@@ -8,9 +8,11 @@
   },
   "scripts": {
     "start": "node src/server.js",
+    "test": "node --test",
     "create-source": "node src/create-source.js",
     "create-operator": "node src/create-operator.js",
-    "retention": "node src/retention.js"
+    "retention": "node src/retention.js",
+    "telegram-worker": "node src/telegram-worker.js"
   },
   "dependencies": {
     "argon2": "0.41.1",

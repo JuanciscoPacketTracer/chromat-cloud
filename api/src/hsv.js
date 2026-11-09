@@ -35,9 +35,14 @@ function averageHsv(data) {
 
 function classify(hsv) {
   if (hsv.saturation < 0.2 || hsv.value < 0.15) return "uncertain";
-  if (hsv.hue >= 35 && hsv.hue < 95) return "green";
-  if (hsv.hue >= 15 && hsv.hue < 35) return "yellow";
-  return "other";
+  if (hsv.hue >= 35 && hsv.hue < 95) return "verde";
+  if (hsv.hue >= 15 && hsv.hue < 35) return "maduro";
+  return "otro";
+}
+
+function confidence(hsv) {
+  if (hsv.saturation < 0.2 || hsv.value < 0.15) return 0;
+  return Number(Math.min(1, (hsv.saturation + hsv.value) / 2).toFixed(4));
 }
 
 export async function classifyHsv(filePath) {
@@ -60,5 +65,6 @@ export async function classifyHsv(filePath) {
     saturation: Number(hsv.saturation.toFixed(4)),
     value: Number(hsv.value.toFixed(4)),
     classification: classify(hsv),
+    confidence: confidence(hsv),
   };
 }
