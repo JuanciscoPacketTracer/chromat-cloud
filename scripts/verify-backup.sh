@@ -10,6 +10,7 @@ fi
 VERIFY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/chromat-restore-check.XXXXXX")"
 RESTORE_CONTAINER="chromat-restore-check-${RANDOM}-${RANDOM}"
 RESTORE_IMAGE="${RESTORE_IMAGE:-mariadb:11.8.2}"
+AGE_IDENTITY_FILE="${BACKUP_AGE_IDENTITY_FILE:-}"
 cleanup() {
   docker rm -f "${RESTORE_CONTAINER}" >/dev/null 2>&1 || true
   rm -rf -- "${VERIFY_DIR}"
@@ -18,17 +19,33 @@ trap cleanup EXIT
 (
   cd -- "${BACKUP_DIR}"
   sha256sum --check checksums.sha256
-  gzip -t raw.tar.gz
+  if [[ -f raw.tar.gz.age ]]; then
+    [[ -r "${AGE_IDENTITY_FILE}" ]] || {
+      printf 'BACKUP_AGE_IDENTITY_FILE is required for encrypted backups\n' >&2
+      exit 2
+    }
+    command -v age >/dev/null || {
+      printf 'age is required to verify encrypted backups\n' >&2
+      exit 2
+    }
+    age -d -i "${AGE_IDENTITY_FILE}" -o "${VERIFY_DIR}/database.sql" database.sql.age
+    age -d -i "${AGE_IDENTITY_FILE}" -o "${VERIFY_DIR}/raw.tar.gz" raw.tar.gz.age
+    age -d -i "${AGE_IDENTITY_FILE}" -o "${VERIFY_DIR}/raw-manifest.tsv" raw-manifest.tsv.age
+    age -d -i "${AGE_IDENTITY_FILE}" -o "${VERIFY_DIR}/configuration.tar.gz" configuration.tar.gz.age
+  else
+    cp -- database.sql raw.tar.gz raw-manifest.tsv configuration.tar.gz "${VERIFY_DIR}/"
+  fi
+  gzip -t "${VERIFY_DIR}/raw.tar.gz"
   mkdir -p "${VERIFY_DIR}/raw"
-  tar -xzf raw.tar.gz -C "${VERIFY_DIR}/raw"
-  (cd "${VERIFY_DIR}/raw" && sha256sum --check "${BACKUP_DIR}/raw-manifest.tsv")
-  test -s database.sql
-  test -s raw-manifest.tsv
-  test -s configuration.tar.gz
+  tar -xzf "${VERIFY_DIR}/raw.tar.gz" -C "${VERIFY_DIR}/raw"
+  (cd "${VERIFY_DIR}/raw" && sha256sum --check "${VERIFY_DIR}/raw-manifest.tsv")
+  test -s "${VERIFY_DIR}/database.sql"
+  test -s "${VERIFY_DIR}/raw-manifest.tsv"
+  test -s "${VERIFY_DIR}/configuration.tar.gz"
 )
 
 mkdir -p "${VERIFY_DIR}/configuration"
-tar -xzf "${BACKUP_DIR}/configuration.tar.gz" -C "${VERIFY_DIR}/configuration"
+tar -xzf "${VERIFY_DIR}/configuration.tar.gz" -C "${VERIFY_DIR}/configuration"
 docker run -d --network none --name "${RESTORE_CONTAINER}" \
   -e MARIADB_DATABASE=chromat_restore \
   -e MARIADB_ROOT_PASSWORD=restore-verification \
@@ -47,9 +64,9 @@ for attempt in $(seq 1 60); do
 done
 
 sed -E 's/^USE .+;$/USE `chromat_restore`;/' \
-  "${BACKUP_DIR}/database.sql" >"${VERIFY_DIR}/database.sql"
+  "${VERIFY_DIR}/database.sql" >"${VERIFY_DIR}/database-import.sql"
 docker exec -i "${RESTORE_CONTAINER}" mariadb \
-  -uroot -prestore-verification chromat_restore <"${VERIFY_DIR}/database.sql"
+  -uroot -prestore-verification chromat_restore <"${VERIFY_DIR}/database-import.sql"
 
 while IFS= read -r migration; do
   version="${migration%%_*}"

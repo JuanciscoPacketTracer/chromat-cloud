@@ -3,8 +3,11 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKUP_ROOT="${BACKUP_ROOT:-${ROOT_DIR}/backups}"
+BACKUP_ROOT="$(realpath -m -- "${BACKUP_ROOT}")"
 COMPOSE="${COMPOSE:-docker compose}"
 RAW_VOLUME_NAME="${RAW_VOLUME_NAME:-chromat_raw_data}"
+AGE_RECIPIENT_FILE="${BACKUP_AGE_RECIPIENT_FILE:-}"
+EXTERNAL_DIR="${BACKUP_EXTERNAL_DIR:-}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 WORK_DIR="${BACKUP_ROOT}/.tmp-${STAMP}"
 BACKUP_DIR="${BACKUP_ROOT}/${STAMP}"
@@ -25,6 +28,25 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p -- "${WORK_DIR}" "${BACKUP_ROOT}"
+if [[ -z "${AGE_RECIPIENT_FILE}" || ! -r "${AGE_RECIPIENT_FILE}" ]]; then
+  printf 'BACKUP_AGE_RECIPIENT_FILE must point to a readable age recipient file\n' >&2
+  exit 2
+fi
+if [[ -z "${EXTERNAL_DIR}" ]]; then
+  printf 'BACKUP_EXTERNAL_DIR must point to the mounted external backup directory\n' >&2
+  exit 2
+fi
+command -v age >/dev/null || {
+  printf 'age is required for encrypted backups\n' >&2
+  exit 2
+}
+EXTERNAL_DIR="$(realpath -m -- "${EXTERNAL_DIR}")"
+case "${EXTERNAL_DIR}/" in
+  "${BACKUP_ROOT}/"*)
+    printf 'BACKUP_EXTERNAL_DIR must not be inside BACKUP_ROOT\n' >&2
+    exit 2
+    ;;
+esac
 ${COMPOSE} exec -T api node -e \
   'require("node:fs").writeFileSync("/app/uploads/.maintenance", "backup\n")'
 MAINTENANCE_ACTIVE=1
@@ -47,9 +69,15 @@ docker run --rm --network none \
 
 tar -czf "${WORK_DIR}/configuration.tar.gz" \
   -C "${ROOT_DIR}" compose.yaml nginx/conf.d db/migrations
+for artifact in database.sql raw.tar.gz raw-manifest.tsv configuration.tar.gz; do
+  age -R "${AGE_RECIPIENT_FILE}" \
+    -o "${WORK_DIR}/${artifact}.age" "${WORK_DIR}/${artifact}"
+  rm -f -- "${WORK_DIR}/${artifact}"
+done
 (
   cd "${WORK_DIR}"
-  sha256sum database.sql raw.tar.gz raw-manifest.tsv configuration.tar.gz > checksums.sha256
+  sha256sum database.sql.age raw.tar.gz.age raw-manifest.tsv.age configuration.tar.gz.age \
+    > checksums.sha256
 )
 
 mv -- "${WORK_DIR}" "${BACKUP_DIR}"
@@ -58,4 +86,6 @@ ${COMPOSE} exec -T api node -e \
 MAINTENANCE_ACTIVE=0
 ${COMPOSE} start worker >/dev/null
 WORKER_STOPPED=0
+mkdir -p -- "${EXTERNAL_DIR}"
+cp -a -- "${BACKUP_DIR}" "${EXTERNAL_DIR}/"
 printf '%s\n' "${BACKUP_DIR}"
