@@ -725,6 +725,26 @@ async function adminCleanupTestSource(request, response, sourceId) {
   sendJson(response, 200, { source_id: sourceId, cleaned: true });
 }
 
+async function adminReemitAlert(request, response, alertId) {
+  const session = await adminSessionWithCsrf(request, response);
+  if (!session) return;
+  const [result] = await pool.query(
+    `UPDATE monitoring_alerts
+        SET status = 'pending', attempts = 0, available_at = UTC_TIMESTAMP(3),
+            lease_owner = NULL, lease_expires_at = NULL, last_error = NULL
+      WHERE alert_id = ? AND status = 'failed'`,
+    [alertId],
+  );
+  if (result.affectedRows !== 1) {
+    errorResponse(response, 404, "not_found", "Failed alert not found");
+    return;
+  }
+  await audit("alert_reemitted", request, session.operator_id, {
+    alert_id: alertId,
+  });
+  sendJson(response, 200, { alert_id: alertId, status: "pending" });
+}
+
 async function adminRotateSourceKey(request, response, sourceId) {
   const session = await adminSessionWithCsrf(request, response);
   if (!session) return;
@@ -1362,6 +1382,16 @@ const server = http.createServer(async (request, response) => {
     }
     if (request.method === "GET" && parsedUrl.pathname === "/api/v1/admin/audit") {
       await adminAudit(request, response);
+      return;
+    }
+    const adminAlertReemitMatch = parsedUrl.pathname.match(
+      /^\/api\/v1\/admin\/alerts\/([0-9]+)\/reemit$/,
+    );
+    if (
+      request.method === "POST" &&
+      adminAlertReemitMatch
+    ) {
+      await adminReemitAlert(request, response, Number(adminAlertReemitMatch[1]));
       return;
     }
     const rawDownloadMatch = parsedUrl.pathname.match(

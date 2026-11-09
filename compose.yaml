@@ -105,6 +105,35 @@ services:
       inference:
         condition: service_healthy
 
+  telegram-worker:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+      platforms:
+        - linux/amd64
+    image: chromat-api:dev
+    command: ["node", "src/telegram-worker.js"]
+    environment:
+      DB_HOST: db
+      DB_PORT: ${DB_PORT}
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
+      PANEL_URL: ${PANEL_URL}
+      ALERT_POLL_MS: ${ALERT_POLL_MS}
+      ALERT_LEASE_SECONDS: ${ALERT_LEASE_SECONDS}
+      TZ: ${TZ}
+    volumes:
+      - ./db/migrations:/app/migrations:ro
+      - ${TELEGRAM_BOT_TOKEN_HOST_FILE}:/run/secrets/telegram_bot_token:ro
+    networks:
+      - internal
+      - edge
+    depends_on:
+      db:
+        condition: service_healthy
+
   inference:
     build:
       context: ./inference
