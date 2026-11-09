@@ -27,8 +27,8 @@ No incluye: el entrenamiento de la red neuronal (se hace en otro entorno, por ej
 ```
  Huerta                                  VM Ubuntu Server (Docker Compose)
 ┌───────────────┐   imágenes + datos   ┌───────────────────────────────────────────┐
-│ Raspberry Pi  │ ───────────────────► │  Nginx (80/443)                           │
-│ + cámara      │   HTTP en red local  │    ├─► Panel web                          │
+│ Raspberry Pi  │ ───── HTTPS:443 ───► │  Nginx (443)                              │
+│ + cámara      │                      │    ├─► Panel web                          │
 │ (edge/)       │                      │    └─► API Node.js  ──► Inferencia Python │
 └───────────────┘                      │              │                            │
                                        │              └──► MariaDB                 │
@@ -43,7 +43,7 @@ Productor ──── navegador ────────────► │  Al
 | `worker` | Node.js 26 | Jobs, inferencia, agregación y alertas | No |
 | `telegram-worker` | Node.js 26 | Entrega Telegram con leases y reintentos | No |
 | `inference` | Python 3.13 | Clasificación HSV/CNN determinista | No |
-| `db` | MariaDB 11.8 | Metadatos, jobs, resultados y auditoría | No |
+| `db` | MariaDB 11.8 | Metadatos, jobs, Datos derivados y auditoría | No |
 
 **Decisión de seguridad:** solo Nginx publica TCP/443. API, workers, inferencia y MariaDB permanecen en la red interna de Compose.
 
@@ -54,7 +54,7 @@ Productor ──── navegador ────────────► │  Al
 1. La Raspberry Pi captura una imagen y lee temperatura y humedad.
 2. Envía la imagen y los datos a `POST /api/v1/events`.
 3. La API guarda el Evento de monitoreo, el Dato crudo y un único job antes de responder `202`.
-4. El worker procesa el job, conserva ejecuciones versionadas y actualiza el resultado oficial.
+4. El worker procesa el job, conserva ejecuciones versionadas y actualiza el Dato derivado oficial.
 5. El estado agregado genera una alerta deduplicada al entrar en `maduro`; Telegram la entrega con leases y reintentos.
 6. El productor consulta únicamente sus fuentes desde el panel de solo lectura.
 
@@ -62,6 +62,7 @@ Productor ──── navegador ────────────► │  Al
 
 ```
 cp .env.example .env
+export CHROMAT_VM_IP=127.0.0.1
 mkdir -p secrets
 printf '%s\n' 'replace-with-a-development-token' > secrets/telegram_bot_token
 bash scripts/dev-tls.sh
@@ -73,7 +74,9 @@ usarse como materiales de producción. El único puerto publicado por Compose es
 TCP/443; API, workers, inferencia y MariaDB permanecen internos.
 
 Para smoke tests con TLS verificado, exporta `CA_CERT=$PWD/certs/dev/ca.crt` y
-configura las credenciales del operador y de la Fuente de monitoreo dedicada.
+configura `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `SMOKE_SOURCE_ID`,
+`SMOKE_SOURCE_API_KEY` y `FOREIGN_EVENT_ID` para la Fuente de monitoreo
+dedicada.
 El worker Telegram usa el archivo externo indicado por
 `TELEGRAM_BOT_TOKEN_HOST_FILE`.
 
