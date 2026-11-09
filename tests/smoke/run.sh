@@ -21,7 +21,7 @@ Optional environment:
   ALLOW_INSECURE_TLS=true
                  Explicitly allow self-signed certificates for local-only runs
   SMOKE_TESTS    Comma-separated scenarios or "all"
-                 ingestion,processing,inference,admin-auth,source-management
+                 ingestion,processing,inference,capacity,admin-auth,source-management
   SMOKE_SOURCE_ID
                  Dedicated test source to clean after event scenarios
 EOF
@@ -53,7 +53,7 @@ smoke_curl --silent --show-error --fail "$base_url/health/ready" >/dev/null ||
 bash "$repo_root/tests/smoke/skeleton.sh"
 
 if [[ "$selected_tests" == "all" ]]; then
-  selected_tests="ingestion,processing,inference,admin-auth,source-management"
+  selected_tests="ingestion,processing,inference,capacity,admin-auth,source-management"
 fi
 
 IFS=',' read -r -a tests <<<"$selected_tests"
@@ -100,6 +100,11 @@ for test_name in "${tests[@]}"; do
       ;;
     processing|inference)
       : "${SMOKE_SOURCE_API_KEY:?SMOKE_SOURCE_API_KEY is required for $test_name}"
+      ;;
+    capacity)
+      : "${SMOKE_SOURCE_API_KEY:?SMOKE_SOURCE_API_KEY is required for capacity}"
+      : "${ADMIN_USERNAME:?ADMIN_USERNAME is required for capacity}"
+      : "${ADMIN_PASSWORD:?ADMIN_PASSWORD is required for capacity}"
       ;;
     admin-auth|source-management)
       : "${ADMIN_USERNAME:?ADMIN_USERNAME is required for $test_name}"
