@@ -239,7 +239,7 @@ async function adminDownloadRaw(request, response, sourceId, eventId) {
   const [rows] = await pool.query(
     `SELECT r.storage_path, r.media_type, r.byte_size
        FROM raw_files r
-      WHERE r.source_id = ? AND r.event_id = ?
+      WHERE r.source_id = ? AND r.event_id = ? AND r.storage_path IS NOT NULL
       LIMIT 1`,
     [sourceId, eventId],
   );
@@ -852,6 +852,16 @@ async function isDatabaseReady() {
   }
 }
 
+async function isMaintenanceActive() {
+  try {
+    await fsp.access(maintenanceMarker, fs.constants.F_OK);
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
 async function ingestEvent(request, response, sourceId) {
   let upload;
   try {
@@ -861,15 +871,6 @@ async function ingestEvent(request, response, sourceId) {
       throw Object.assign(new Error("invalid_event_id"), { statusCode: 422 });
     }
 
-    async function isMaintenanceActive() {
-      try {
-        await fsp.access(maintenanceMarker, fs.constants.F_OK);
-        return true;
-      } catch (error) {
-        if (error.code === "ENOENT") return false;
-        throw error;
-      }
-    }
     const occurredAt = parseTimestamp(metadata.occurred_at);
     if (!occurredAt) {
       throw Object.assign(new Error("invalid_occurred_at"), { statusCode: 422 });
@@ -1009,7 +1010,7 @@ async function getEvent(request, response, sourceId, eventId) {
             e.temperature_c, e.humidity_rh, r.storage_path, r.media_type, r.byte_size,
             r.sha256
        FROM monitoring_events e
-       JOIN raw_files r ON r.source_id = e.source_id AND r.event_id = e.event_id
+       LEFT JOIN raw_files r ON r.source_id = e.source_id AND r.event_id = e.event_id
        LEFT JOIN analysis_runs ar ON ar.run_id = e.current_result_run_id
       WHERE e.source_id = ? AND e.event_id = ?`,
     [sourceId, eventId],
@@ -1069,11 +1070,14 @@ async function getEvent(request, response, sourceId, eventId) {
     comparison,
     temperature_c: event.temperature_c,
     humidity_rh: event.humidity_rh,
-    raw_file: {
-      media_type: event.media_type,
-      byte_size: Number(event.byte_size),
-      sha256: event.sha256,
-    },
+    raw_file: event.sha256
+      ? {
+          available: Boolean(event.storage_path),
+          media_type: event.media_type,
+          byte_size: Number(event.byte_size),
+          sha256: event.sha256,
+        }
+      : null,
   });
 }
 

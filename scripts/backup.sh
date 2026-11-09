@@ -9,12 +9,16 @@ STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 WORK_DIR="${BACKUP_ROOT}/.tmp-${STAMP}"
 BACKUP_DIR="${BACKUP_ROOT}/${STAMP}"
 MAINTENANCE_ACTIVE=0
+WORKER_STOPPED=0
 
 cleanup() {
   if (( MAINTENANCE_ACTIVE )); then
     ${COMPOSE} exec -T api node -e \
       'require("node:fs").rmSync("/app/uploads/.maintenance", { force: true })' \
       >/dev/null || true
+  fi
+  if (( WORKER_STOPPED )); then
+    ${COMPOSE} start worker >/dev/null || true
   fi
   rm -rf -- "${WORK_DIR}"
 }
@@ -24,6 +28,8 @@ mkdir -p -- "${WORK_DIR}" "${BACKUP_ROOT}"
 ${COMPOSE} exec -T api node -e \
   'require("node:fs").writeFileSync("/app/uploads/.maintenance", "backup\n")'
 MAINTENANCE_ACTIVE=1
+${COMPOSE} stop worker >/dev/null
+WORKER_STOPPED=1
 
 ${COMPOSE} exec -T db sh -c \
   'mariadb-dump --single-transaction --routines --triggers -u root -p"$MARIADB_ROOT_PASSWORD" "$MARIADB_DATABASE"' \
@@ -47,7 +53,9 @@ tar -czf "${WORK_DIR}/configuration.tar.gz" \
 )
 
 mv -- "${WORK_DIR}" "${BACKUP_DIR}"
-MAINTENANCE_ACTIVE=0
 ${COMPOSE} exec -T api node -e \
   'require("node:fs").rmSync("/app/uploads/.maintenance", { force: true })'
+MAINTENANCE_ACTIVE=0
+${COMPOSE} start worker >/dev/null
+WORKER_STOPPED=0
 printf '%s\n' "${BACKUP_DIR}"

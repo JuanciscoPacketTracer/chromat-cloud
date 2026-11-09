@@ -57,6 +57,12 @@ async function deleteRawFiles() {
         WHERE source_id = ? AND event_id = ? AND raw_deleted_at IS NULL`,
       [row.source_id, row.event_id],
     );
+    await pool.query(
+      `UPDATE raw_files
+          SET storage_path = NULL
+        WHERE source_id = ? AND event_id = ?`,
+      [row.source_id, row.event_id],
+    );
     deleted += 1;
   }
   return deleted;
@@ -68,8 +74,7 @@ async function deleteDerivedData() {
         SET derived_data = NULL,
             current_result_run_id = NULL,
             derived_deleted_at = UTC_TIMESTAMP(3)
-      WHERE retention_hold = FALSE
-        AND derived_deleted_at IS NULL
+      WHERE derived_deleted_at IS NULL
         AND received_at < DATE_SUB(UTC_TIMESTAMP(3), INTERVAL ? DAY)`,
     [derivedRetentionDays],
   );
@@ -79,6 +84,11 @@ async function deleteDerivedData() {
        JOIN monitoring_events e
          ON e.source_id = ar.source_id AND e.event_id = ar.event_id
       WHERE e.derived_deleted_at IS NOT NULL`,
+  );
+  await pool.query(
+    `DELETE FROM audit_log
+      WHERE occurred_at < DATE_SUB(UTC_TIMESTAMP(3), INTERVAL ? DAY)`,
+    [derivedRetentionDays],
   );
   return result.affectedRows;
 }
