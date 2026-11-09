@@ -1,0 +1,5 @@
+{
+  "version": "deterministic-1",
+  "classes": ["green", "yellow", "other"],
+  "seed": "chromat-cnn-contract"
+}

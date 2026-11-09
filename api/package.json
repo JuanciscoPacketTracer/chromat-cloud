@@ -1,0 +1,22 @@
+{
+  "name": "chromat-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "26.x"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "create-source": "node src/create-source.js",
+    "create-operator": "node src/create-operator.js",
+    "retention": "node src/retention.js"
+  },
+  "dependencies": {
+    "argon2": "0.41.1",
+    "busboy": "1.6.0",
+    "jpeg-js": "0.4.4",
+    "mysql2": "3.14.1",
+    "pngjs": "7.0.0"
+  }
+}
