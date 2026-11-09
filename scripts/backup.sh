@@ -15,6 +15,7 @@ STATE_DIR="${BACKUP_STATE_DIR:-${BACKUP_ROOT}/.state}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 WORK_DIR="${BACKUP_ROOT}/.tmp-${STAMP}"
 BACKUP_DIR="${BACKUP_ROOT}/${STAMP}"
+PENDING_STATE="${STATE_DIR}/.raw-manifest-${STAMP}.pending"
 MAINTENANCE_ACTIVE=0
 WORKER_STOPPED=0
 
@@ -27,11 +28,12 @@ cleanup() {
   if (( WORKER_STOPPED )); then
     ${COMPOSE} start worker >/dev/null || true
   fi
+  rm -f -- "${PENDING_STATE}"
   rm -rf -- "${WORK_DIR}"
 }
 trap cleanup EXIT
 
-mkdir -p -- "${WORK_DIR}" "${BACKUP_ROOT}"
+mkdir -p -- "${WORK_DIR}" "${BACKUP_ROOT}" "${STATE_DIR}"
 if [[ -z "${AGE_RECIPIENT_FILE}" || ! -r "${AGE_RECIPIENT_FILE}" ]]; then
   printf 'BACKUP_AGE_RECIPIENT_FILE must point to a readable age recipient file\n' >&2
   exit 2
@@ -120,7 +122,6 @@ docker run --rm --network none \
   '
 check_deadline
 
-mkdir -p -- "${STATE_DIR}"
 state_manifest="${STATE_DIR}/raw-manifest.tsv"
 base_backup=""
 if [[ "${BACKUP_MODE}" == "incremental" ]]; then
@@ -187,7 +188,7 @@ check_deadline
     backup-metadata.json.age \
     > checksums.sha256
 )
-cp -- "${WORK_DIR}/current-raw-manifest.tsv" "${STATE_DIR}/raw-manifest.tsv"
+cp -- "${WORK_DIR}/current-raw-manifest.tsv" "${PENDING_STATE}"
 rm -f -- "${WORK_DIR}/current-raw-manifest.tsv" "${WORK_DIR}/raw-selection.txt"
 
 mv -- "${WORK_DIR}" "${BACKUP_DIR}"
@@ -199,7 +200,10 @@ check_deadline
 printf '%s\n' "${BACKUP_DIR}" >"${BACKUP_ROOT}/last-successful"
 cp -- "${BACKUP_ROOT}/last-successful" "${EXTERNAL_DIR}/"
 if [[ "${BACKUP_MODE}" == "full" ]]; then
+  mv -- "${PENDING_STATE}" "${STATE_DIR}/raw-manifest.tsv"
   printf '%s\n' "${BACKUP_DIR}" >"${STATE_DIR}/last-full"
+else
+  rm -f -- "${PENDING_STATE}"
 fi
 MAINTENANCE_ACTIVE=0
 ${COMPOSE} start worker >/dev/null
