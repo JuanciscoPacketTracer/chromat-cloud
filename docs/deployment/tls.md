@@ -80,6 +80,14 @@ openssl s_client -connect chromat.lan:443 \
 El segundo comando debe terminar con `Verify return code: 0 (ok)`. Desde cada
 cliente autorizado, instala `ca.crt` en el almacén de confianza y usa
 `https://chromat.lan`; no uses `--insecure` ni desactives la verificación.
+Los smoke tests de producción usan el mismo ancla:
+
+```bash
+CA_CERT=/srv/chromat/tls/ca.crt \
+BASE_URL=https://chromat.lan \
+SMOKE_TESTS=all \
+tests/smoke/run.sh
+```
 
 ## Revisión y renovación manual
 

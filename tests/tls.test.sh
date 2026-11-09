@@ -47,6 +47,10 @@ test "$(stat -c '%a' "$installed_dir/server.key")" = 600
 test "$(stat -c '%a' "$installed_dir/server.crt")" = 644
 test "$(stat -c '%a' "$installed_dir/ca.crt")" = 644
 openssl verify -CAfile "$installed_dir/ca.crt" "$installed_dir/server.crt" >/dev/null
+server_inode="$(stat -c '%i' "$installed_dir/server.crt")"
+bash "$repo_root/scripts/install-production-tls.sh" \
+  "$source_dir" "$installed_dir" 192.0.2.10 >/dev/null
+test "$(stat -c '%i' "$installed_dir/server.crt")" = "$server_inode"
 
 if bash "$repo_root/scripts/check-tls-expiry.sh" "$installed_dir/server.crt" 30; then
   :

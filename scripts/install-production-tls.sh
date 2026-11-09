@@ -81,7 +81,12 @@ mkdir -p -- "$destination_dir"
 for file in "${required_files[@]}"; do
   install_mode=0644
   [[ "$file" == server.key ]] && install_mode=0600
-  install -m "$install_mode" "$source_dir/$file" "$destination_dir/$file"
+  if [[ -f "$destination_dir/$file" ]]; then
+    cat "$source_dir/$file" >"$destination_dir/$file"
+    chmod "$install_mode" "$destination_dir/$file"
+  else
+    install -m "$install_mode" "$source_dir/$file" "$destination_dir/$file"
+  fi
 done
 
 printf 'Production TLS materials installed in %s\n' "$destination_dir"

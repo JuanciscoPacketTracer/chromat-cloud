@@ -18,11 +18,10 @@ command -v openssl >/dev/null || {
 }
 
 seconds="$((days * 86400))"
+expiry="$(openssl x509 -in "$certificate" -enddate -noout | cut -d= -f2-)"
 if openssl x509 -in "$certificate" -checkend "$seconds" -noout >/dev/null; then
-  expiry="$(openssl x509 -in "$certificate" -enddate -noout | cut -d= -f2-)"
   printf 'PASS: certificate valid beyond %s days (expires %s)\n' "$days" "$expiry"
 else
-  expiry="$(openssl x509 -in "$certificate" -enddate -noout | cut -d= -f2-)"
   printf 'FAIL: certificate expires within %s days (expires %s)\n' "$days" "$expiry" >&2
   exit 1
 fi
