@@ -10,6 +10,8 @@ AGE_RECIPIENT_FILE="${BACKUP_AGE_RECIPIENT_FILE:-}"
 EXTERNAL_DIR="${BACKUP_EXTERNAL_DIR:-}"
 SECRET_FILES="${BACKUP_SECRET_FILES:-}"
 MAX_SECONDS="${BACKUP_MAX_SECONDS:-3600}"
+BACKUP_MODE="${BACKUP_MODE:-full}"
+STATE_DIR="${BACKUP_STATE_DIR:-${BACKUP_ROOT}/.state}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 WORK_DIR="${BACKUP_ROOT}/.tmp-${STAMP}"
 BACKUP_DIR="${BACKUP_ROOT}/${STAMP}"
@@ -44,6 +46,10 @@ if [[ -z "${SECRET_FILES}" ]]; then
 fi
 if ! [[ "${MAX_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
   printf 'BACKUP_MAX_SECONDS must be a positive integer\n' >&2
+  exit 2
+fi
+if [[ "${BACKUP_MODE}" != "full" && "${BACKUP_MODE}" != "incremental" ]]; then
+  printf 'BACKUP_MODE must be full or incremental\n' >&2
   exit 2
 fi
 command -v age >/dev/null || {
@@ -110,9 +116,51 @@ docker run --rm --network none \
   busybox:1.36.1 sh -c '
     set -eu
     cd /raw
-    find . -type f ! -name .maintenance -exec sha256sum {} + | sort > /backup/raw-manifest.tsv
-    tar -czf /backup/raw.tar.gz --exclude=./.maintenance .
+    find . -type f ! -name .maintenance -exec sha256sum {} + | sort > /backup/current-raw-manifest.tsv
   '
+check_deadline
+
+mkdir -p -- "${STATE_DIR}"
+state_manifest="${STATE_DIR}/raw-manifest.tsv"
+base_backup=""
+if [[ "${BACKUP_MODE}" == "incremental" ]]; then
+  [[ -s "${state_manifest}" ]] || {
+    printf 'An earlier full backup is required before an incremental backup\n' >&2
+    exit 2
+  }
+  base_backup="$(cat "${STATE_DIR}/last-full")"
+  [[ -n "${base_backup}" ]] || {
+    printf 'State does not identify a full backup base\n' >&2
+    exit 2
+  }
+  [[ -d "${base_backup}" ]] || {
+    printf 'Incremental backup base is missing: %s\n' "${base_backup}" >&2
+    exit 2
+  }
+  awk 'NR == FNR { previous[$2] = $1; next }
+       { if (!( $2 in previous) || previous[$2] != $1) print $2 }' \
+    "${state_manifest}" "${WORK_DIR}/current-raw-manifest.tsv" \
+    >"${WORK_DIR}/raw-selection.txt"
+  awk 'NR == FNR { current[$2] = 1; next }
+       { if (!($2 in current)) print $2 }' \
+    "${WORK_DIR}/current-raw-manifest.tsv" "${state_manifest}" \
+    >"${WORK_DIR}/raw-deletions.tsv"
+else
+  cut -d' ' -f3- "${WORK_DIR}/current-raw-manifest.tsv" \
+    >"${WORK_DIR}/raw-selection.txt"
+  : >"${WORK_DIR}/raw-deletions.tsv"
+fi
+cp -- "${WORK_DIR}/current-raw-manifest.tsv" "${WORK_DIR}/raw-manifest.tsv"
+docker run --rm --network none \
+  -v "${RAW_VOLUME_NAME}:/raw:ro" \
+  -v "${WORK_DIR}:/backup" \
+  busybox:1.36.1 sh -c '
+    set -eu
+    cd /raw
+    tar -czf /backup/raw.tar.gz -T /backup/raw-selection.txt
+  '
+printf '{"mode":"%s","base_backup":"%s"}\n' \
+  "${BACKUP_MODE}" "${base_backup}" >"${WORK_DIR}/backup-metadata.json"
 check_deadline
 
 tar -czf "${WORK_DIR}/configuration.tar.gz" \
@@ -124,15 +172,23 @@ for artifact in database.sql raw.tar.gz raw-manifest.tsv configuration.tar.gz; d
   rm -f -- "${WORK_DIR}/${artifact}"
 done
 age -R "${AGE_RECIPIENT_FILE}" \
+  -o "${WORK_DIR}/raw-deletions.tsv.age" "${WORK_DIR}/raw-deletions.tsv"
+age -R "${AGE_RECIPIENT_FILE}" \
+  -o "${WORK_DIR}/backup-metadata.json.age" "${WORK_DIR}/backup-metadata.json"
+rm -f -- "${WORK_DIR}/raw-deletions.tsv" "${WORK_DIR}/backup-metadata.json"
+age -R "${AGE_RECIPIENT_FILE}" \
   -o "${WORK_DIR}/secrets.tar.gz.age" "${WORK_DIR}/secrets.tar.gz"
 rm -rf -- "${WORK_DIR}/secrets" "${WORK_DIR}/secrets.tar.gz"
 check_deadline
 (
   cd "${WORK_DIR}"
   sha256sum database.sql.age raw.tar.gz.age raw-manifest.tsv.age \
-    configuration.tar.gz.age secrets.tar.gz.age \
+    configuration.tar.gz.age secrets.tar.gz.age raw-deletions.tsv.age \
+    backup-metadata.json.age \
     > checksums.sha256
 )
+cp -- "${WORK_DIR}/current-raw-manifest.tsv" "${STATE_DIR}/raw-manifest.tsv"
+rm -f -- "${WORK_DIR}/current-raw-manifest.tsv" "${WORK_DIR}/raw-selection.txt"
 
 mv -- "${WORK_DIR}" "${BACKUP_DIR}"
 ${COMPOSE} exec -T api node -e \
@@ -142,6 +198,9 @@ cp -a -- "${BACKUP_DIR}" "${EXTERNAL_DIR}/"
 check_deadline
 printf '%s\n' "${BACKUP_DIR}" >"${BACKUP_ROOT}/last-successful"
 cp -- "${BACKUP_ROOT}/last-successful" "${EXTERNAL_DIR}/"
+if [[ "${BACKUP_MODE}" == "full" ]]; then
+  printf '%s\n' "${BACKUP_DIR}" >"${STATE_DIR}/last-full"
+fi
 MAINTENANCE_ACTIVE=0
 ${COMPOSE} start worker >/dev/null
 WORKER_STOPPED=0

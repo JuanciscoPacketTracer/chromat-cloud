@@ -11,6 +11,7 @@ VERIFY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/chromat-restore-check.XXXXXX")"
 RESTORE_CONTAINER="chromat-restore-check-${RANDOM}-${RANDOM}"
 RESTORE_IMAGE="${RESTORE_IMAGE:-mariadb:11.8.2}"
 AGE_IDENTITY_FILE="${BACKUP_AGE_IDENTITY_FILE:-}"
+BASE_BACKUP_DIR="${BACKUP_BASE_DIR:-}"
 ENCRYPTED_BACKUP=0
 [[ -f "${BACKUP_DIR}/raw.tar.gz.age" ]] && ENCRYPTED_BACKUP=1
 cleanup() {
@@ -34,16 +35,46 @@ trap cleanup EXIT
     age -d -i "${AGE_IDENTITY_FILE}" -o "${VERIFY_DIR}/raw.tar.gz" raw.tar.gz.age
     age -d -i "${AGE_IDENTITY_FILE}" -o "${VERIFY_DIR}/raw-manifest.tsv" raw-manifest.tsv.age
     age -d -i "${AGE_IDENTITY_FILE}" -o "${VERIFY_DIR}/configuration.tar.gz" configuration.tar.gz.age
+    if [[ -f raw-deletions.tsv.age ]]; then
+      age -d -i "${AGE_IDENTITY_FILE}" -o "${VERIFY_DIR}/raw-deletions.tsv" raw-deletions.tsv.age
+    fi
+    if [[ -f backup-metadata.json.age ]]; then
+      age -d -i "${AGE_IDENTITY_FILE}" -o "${VERIFY_DIR}/backup-metadata.json" backup-metadata.json.age
+    fi
     if [[ -f secrets.tar.gz.age ]]; then
       age -d -i "${AGE_IDENTITY_FILE}" -o "${VERIFY_DIR}/secrets.tar.gz" secrets.tar.gz.age
     fi
   else
     cp -- database.sql raw.tar.gz raw-manifest.tsv configuration.tar.gz "${VERIFY_DIR}/"
     [[ -f secrets.tar.gz ]] && cp -- secrets.tar.gz "${VERIFY_DIR}/"
+    [[ -f raw-deletions.tsv ]] && cp -- raw-deletions.tsv "${VERIFY_DIR}/"
+    [[ -f backup-metadata.json ]] && cp -- backup-metadata.json "${VERIFY_DIR}/"
   fi
   gzip -t "${VERIFY_DIR}/raw.tar.gz"
   mkdir -p "${VERIFY_DIR}/raw"
+  mode="full"
+  if [[ -s "${VERIFY_DIR}/backup-metadata.json" ]]; then
+    mode="$(sed -n 's/.*"mode":"\([^"]*\)".*/\1/p' "${VERIFY_DIR}/backup-metadata.json")"
+  fi
+  if [[ "${mode}" == "incremental" ]]; then
+    [[ -n "${BASE_BACKUP_DIR}" && -d "${BASE_BACKUP_DIR}" ]] || {
+      printf 'BACKUP_BASE_DIR is required for incremental restore verification\n' >&2
+      exit 2
+    }
+    if [[ -f "${BASE_BACKUP_DIR}/raw.tar.gz.age" ]]; then
+      age -d -i "${AGE_IDENTITY_FILE}" -o "${VERIFY_DIR}/base-raw.tar.gz" \
+        "${BASE_BACKUP_DIR}/raw.tar.gz.age"
+    else
+      cp -- "${BASE_BACKUP_DIR}/raw.tar.gz" "${VERIFY_DIR}/base-raw.tar.gz"
+    fi
+    tar -xzf "${VERIFY_DIR}/base-raw.tar.gz" -C "${VERIFY_DIR}/raw"
+  fi
   tar -xzf "${VERIFY_DIR}/raw.tar.gz" -C "${VERIFY_DIR}/raw"
+  if [[ "${mode}" == "incremental" ]]; then
+    while IFS= read -r deleted; do
+      [[ -n "${deleted}" ]] && rm -f -- "${VERIFY_DIR}/raw/${deleted}"
+    done <"${VERIFY_DIR}/raw-deletions.tsv"
+  fi
   (cd "${VERIFY_DIR}/raw" && sha256sum --check "${VERIFY_DIR}/raw-manifest.tsv")
   test -s "${VERIFY_DIR}/database.sql"
   test -s "${VERIFY_DIR}/raw-manifest.tsv"
