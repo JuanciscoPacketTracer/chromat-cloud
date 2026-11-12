@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/compose.sh"
 
 expected="$(
-  docker compose exec -T db sh -c \
+  smoke_compose exec -T db sh -c \
     'find /docker-entrypoint-initdb.d -maxdepth 1 -type f -name "[0-9][0-9][0-9]_*.sql" | wc -l'
 )"
 applied="$(
-  docker compose exec -T db sh -c \
-    'mariadb -u root -p"$MARIADB_ROOT_PASSWORD" "$MARIADB_DATABASE" -N -B \
+  smoke_compose exec -T db sh -c \
+    'mariadb -u root -p"$(cat /run/secrets/db_root_password)" "$MARIADB_DATABASE" -N -B \
       -e "SELECT COUNT(*) FROM schema_migrations"'
 )"
 
