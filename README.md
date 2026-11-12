@@ -128,6 +128,11 @@ La operación de backups cifrados, retención y restauración está documentada 
 [`docs/deployment/backups.md`](docs/deployment/backups.md).
 La promoción manual con readiness, smoke tests y rollback compatible está
 documentada en [`docs/deployment/promotion.md`](docs/deployment/promotion.md).
+Los requisitos y la guía de instalación productiva para Ubuntu Server 26.04
+están en [`docs/installation/requisitos.md`](docs/installation/requisitos.md)
+y [`docs/installation/ubuntu-server-26.04.md`](docs/installation/ubuntu-server-26.04.md).
+[`docs/installation/ubuntu-server-24.04.md`](docs/installation/ubuntu-server-24.04.md)
+documenta una alternativa experimental, no soportada para producción.
 
 ## 7. Convenciones
 
