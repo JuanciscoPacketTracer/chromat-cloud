@@ -51,6 +51,12 @@ server_inode="$(stat -c '%i' "$installed_dir/server.crt")"
 bash "$repo_root/scripts/install-production-tls.sh" \
   "$source_dir" "$installed_dir" 192.0.2.10 >/dev/null
 test "$(stat -c '%i' "$installed_dir/server.crt")" = "$server_inode"
+printf 'replacement\n' >>"$source_dir/server.crt"
+if bash "$repo_root/scripts/install-production-tls.sh" \
+  "$source_dir" "$installed_dir" 192.0.2.10 >/dev/null 2>&1; then
+  printf 'FAIL: TLS replacement without explicit authorization was accepted\n' >&2
+  exit 1
+fi
 
 if bash "$repo_root/scripts/check-tls-expiry.sh" "$installed_dir/server.crt" 30; then
   :

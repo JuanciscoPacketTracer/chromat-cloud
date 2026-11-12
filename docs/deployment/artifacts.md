@@ -18,8 +18,10 @@ El resultado queda en `dist/artifacts/2026.11.09-1/` y contiene:
 - `images/*.tar`: imágenes propias y de terceros exportadas con `docker save`.
 - `model/deterministic-model.json`: modelo separado.
 - `db/*.sql`: migraciones.
-- `scripts/`, `tests/smoke/` y `docs/deployment/`: runtime operativo,
-  verificaciones y runbooks necesarios para promover fuera de Git.
+- `scripts/` (incluido `prepare-ubuntu-production-host.sh`),
+  `tests/smoke/` y `docs/deployment/`: aprovisionamiento idempotente,
+  runtime operativo, verificaciones y runbooks necesarios para promover
+  fuera de Git.
 - `compose.yaml`, `nginx/`, `web/` y `.env.example`: runtime no secreto.
 - `production.env.example`: nombres versionados, `PULL_POLICY=never` y
   placeholders que deben completarse con secretos provisionados fuera del
@@ -50,12 +52,16 @@ promoción.
 
 ## Instalar en Ubuntu
 
-Transfiere el directorio o el tarball verificado junto con los materiales
-secretos provisionados fuera de Git. Copia `production.env.example` a
-`production.env` y completa sus credenciales en Ubuntu; el paquete nunca
-contiene contraseñas o tokens reales. En Ubuntu no se ejecutan `docker compose
-pull` ni `docker compose build`; se cargan las imágenes con `docker load` y se
-usa `production.env`. La clave privada de la CA nunca forma parte del paquete.
+Transfiere el tarball y su checksum por un canal autenticado. Después de
+verificar y extraer el paquete, ejecuta
+`scripts/prepare-ubuntu-production-host.sh` como root para preparar Ubuntu
+26.04 amd64, Docker Engine y directorios restringidos. Copia
+`production.env.example` una sola vez a `/etc/chromat/production.env` y
+completa únicamente referencias a secretos provisionados fuera de Git; el
+paquete nunca contiene contraseñas o tokens reales. En Ubuntu no se ejecutan
+`docker compose pull` ni `docker compose build`; se cargan las imágenes con
+`docker load` y Compose usa `/etc/chromat/production.env`. La clave privada de
+la CA nunca forma parte del paquete.
 
 El modelo se monta desde `model/deterministic-model.json` como archivo de solo
 lectura; no depende de una copia distinta embebida en la imagen.

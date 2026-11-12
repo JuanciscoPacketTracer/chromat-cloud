@@ -30,8 +30,9 @@ operación y custodio que conserva la clave de descifrado.
 
 `scripts/backup.sh` cifra con `age` antes de copiar fuera del servidor. El
 servidor recibe un archivo de destinatario (`BACKUP_AGE_RECIPIENT_FILE`) para
-cifrar, pero la identidad privada (`BACKUP_AGE_IDENTITY_FILE`) se conserva
-fuera de Git, fuera del directorio de backups y bajo custodia separada.
+cifrar, pero la identidad privada se entrega sólo mediante
+`verify-backup.sh --identity-file` en el host aislado. Se conserva fuera de
+Git, fuera del directorio de backups y bajo custodia separada.
 
 La clave privada de la CA nunca se incluye en `BACKUP_SECRET_FILES`. El script
 rechaza explícitamente `ca.key` y `ca-root.key`. Los secretos de servicio que
@@ -53,18 +54,32 @@ identidad de descifrado no debe almacenarse junto al backup ni en Git.
 Configura las variables reales fuera de Git:
 
 ```bash
-export BACKUP_ROOT=/srv/chromat/backups
-export BACKUP_EXTERNAL_DIR=/mnt/chromat-backups
-export BACKUP_AGE_RECIPIENT_FILE=/etc/chromat/backup-age-recipient
-export BACKUP_SECRET_FILES='/etc/chromat/secrets/db_password /etc/chromat/secrets/db_root_password /etc/chromat/secrets/telegram_bot_token'
-export BACKUP_MODE=full
+sudo install -d -o root -g root -m 0700 \
+  /srv/chromat/backups /var/lib/chromat/backup-state
+sudo install -d -o root -g root -m 0700 /mnt/chromat-backups
+sudo install -o root -g root -m 0600 /dev/null /etc/chromat/production.env
 ```
 
-Ejecuta el backup desde la release activa:
+`/etc/chromat/production.env` contiene las rutas de `BACKUP_ROOT`,
+`BACKUP_EXTERNAL_DIR`, `BACKUP_AGE_RECIPIENT_FILE`, `BACKUP_SECRET_FILES`,
+`BACKUP_MAX_SECONDS`, `BACKUP_MODE` y `BACKUP_STATE_DIR`; conserva permisos
+`0600`. El script lo analiza sin evaluarlo como código, valida esas rutas, los
+permisos y que el destino externo exista, sea escribible y esté montado fuera
+del root. `BACKUP_SECRET_FILES` incluye
+`/etc/chromat/secrets/db_password`,
+`/etc/chromat/secrets/db_root_password` y
+`/etc/chromat/secrets/telegram_bot_token`. No exportes ni cargues ese archivo
+en el shell del operador. Los directorios de backup, estado y copia externa no
+pueden ser escribibles por grupo u otros; los secretos y la identidad privada
+de `age` deben ser `0600`.
+
+Ejecuta el backup desde la release activa. El script y cada llamada a Docker
+usan `sudo`, por lo que el administrador no necesita pertenecer al grupo
+`docker`:
 
 ```bash
-cd /srv/chromat/active
-scripts/backup.sh
+sudo /srv/chromat/active/scripts/backup.sh \
+  --config /etc/chromat/production.env --mode full
 ```
 
 El script:
@@ -83,30 +98,77 @@ la nueva.
 Para un incremental, primero debe existir un full válido:
 
 ```bash
-export BACKUP_MODE=incremental
-scripts/backup.sh
+sudo /srv/chromat/active/scripts/backup.sh \
+  --config /etc/chromat/production.env --mode incremental
 ```
 
 La primera ejecución de cada cadena siempre es `full`. Si se pierde el full
 base, la cadena incremental deja de ser recuperable y debe iniciarse otra
 cadena completa.
 
-## Verificación y restauración aislada
+## Preparar y verificar una restauración aislada
 
-La verificación nunca restaura sobre la base de producción. Usa una identidad
-de descifrado fuera del servidor operativo o provisionada temporalmente por el
-custodio:
+La verificación nunca restaura sobre la base de producción. Prepara un host
+limpio Ubuntu Server 26.04, separado de la VM productiva y sin sus volúmenes.
+Instala Docker Engine, Docker Compose Plugin, `age`, `openssl` y las imágenes
+verificadas desde el paquete de la release; no permitas que Docker descargue
+imágenes durante la prueba:
 
 ```bash
-export BACKUP_AGE_IDENTITY_FILE=/ruta/segura/backup-age-identity
-export BACKUP_BASE_DIR=/srv/chromat/backups/BASE-FULL
-scripts/verify-backup.sh /srv/chromat/backups/20261109T120000Z
+sudo /ruta/release/scripts/prepare-ubuntu-production-host.sh
+sudo /ruta/release/scripts/verify-artifacts.sh /ruta/release
+for image_archive in /ruta/release/images/*.tar; do
+  sudo docker load --input "$image_archive"
+done
 ```
 
-`BACKUP_BASE_DIR` solo es necesario para verificar un incremental. Cada
+Transfiere la release verificada y el directorio de backup externo por un canal
+autorizado. Antes de usar la copia, valida sus hashes contra
+`checksums.sha256`; monta el medio externo en `/mnt/chromat-backups` como sólo
+lectura. Provisiona las rutas locales del host aislado y una configuración
+mínima con la misma imagen MariaDB incluida en la release:
+
+```bash
+sudo install -d -o root -g root -m 0700 /srv/chromat/restore
+sudo install -o root -g root -m 0600 /dev/null /srv/chromat/restore/restore.env
+sudo sh -c 'printf "%s\n" "CHROMAT_DB_IMAGE=mariadb:11.8.2" \
+  > /srv/chromat/restore/restore.env'
+sudo sh -c "cd /mnt/chromat-backups/20261109T120000Z && sha256sum --check checksums.sha256"
+```
+
+Reemplaza `mariadb:11.8.2` por el valor `CHROMAT_DB_IMAGE` del manifiesto
+verificado de la release. El host aislado no necesita secretos de servicio ni
+la configuración productiva.
+
+La identidad privada de `age` **no se transfiere ni almacena en la VM productiva**:
+identidad privada de `age` **no se transfiere ni almacena en la VM productiva**:
+el custodio la conecta sólo al host aislado y la retira al terminar. La ruta de
+la identidad no forma parte de `production.env`; el contenido de la identidad
+nunca se pasa como argumento, variable de entorno, log ni historial.
+
+En el host aislado, el custodio conecta temporalmente la identidad bajo
+`/media/custodian/backup-age-identity` con permisos `0600`; ese contenido no
+forma parte de argumentos, variables, logs ni historial:
+
+```bash
+sudo /ruta/release/scripts/verify-backup.sh \
+  --config /srv/chromat/restore/restore.env \
+  --identity-file /media/custodian/backup-age-identity \
+  /mnt/chromat-backups/20261109T120000Z
+```
+
+`--base-backup-dir` solo es necesario para verificar un incremental. Cada
 incremental se calcula respecto de su full base, por lo que la verificación
 restaura ese full y el incremental seleccionado; no depende de incrementales
 intermedios. Un backup completo no debe recibir una base distinta.
+
+```bash
+sudo /ruta/release/scripts/verify-backup.sh \
+  --config /srv/chromat/restore/restore.env \
+  --identity-file /media/custodian/backup-age-identity \
+  --base-backup-dir /mnt/chromat-backups/BASE-FULL \
+  /mnt/chromat-backups/INCREMENTAL
+```
 
 `scripts/verify-backup.sh` verifica:
 
@@ -153,7 +215,7 @@ y que la identidad de descifrado no reside en él.
 
 ## Pérdida de la clave
 
-Si se pierde `BACKUP_AGE_IDENTITY_FILE`, se declara un incidente operativo:
+Si se pierde la identidad usada con `--identity-file`, se declara un incidente operativo:
 
 1. se detienen las eliminaciones y se conserva todo el material cifrado;
 2. se informa a los custodios y se localiza la copia autorizada de la identidad;

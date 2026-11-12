@@ -2,16 +2,48 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-BACKUP_ROOT="${BACKUP_ROOT:-${ROOT_DIR}/backups}"
-BACKUP_ROOT="$(realpath -m -- "${BACKUP_ROOT}")"
-COMPOSE="${COMPOSE:-docker compose}"
-RAW_VOLUME_NAME="${RAW_VOLUME_NAME:-chromat_raw_data}"
-AGE_RECIPIENT_FILE="${BACKUP_AGE_RECIPIENT_FILE:-}"
-EXTERNAL_DIR="${BACKUP_EXTERNAL_DIR:-}"
-SECRET_FILES="${BACKUP_SECRET_FILES:-}"
-MAX_SECONDS="${BACKUP_MAX_SECONDS:-3600}"
-BACKUP_MODE="${BACKUP_MODE:-full}"
-STATE_DIR="${BACKUP_STATE_DIR:-${BACKUP_ROOT}/.state}"
+source "${ROOT_DIR}/scripts/lib/backup-config.sh"
+
+CONFIG_FILE=
+MODE_OVERRIDE=
+while (($#)); do
+  case "$1" in
+    --config)
+      CONFIG_FILE="${2:-}"
+      shift 2
+      ;;
+    --mode)
+      MODE_OVERRIDE="${2:-}"
+      shift 2
+      ;;
+    *)
+      printf 'Usage: %s --config <production-env-file> [--mode full|incremental]\n' "$0" >&2
+      exit 2
+      ;;
+  esac
+done
+[[ -n "${CONFIG_FILE}" ]] || {
+  printf 'Usage: %s --config <production-env-file> [--mode full|incremental]\n' "$0" >&2
+  exit 2
+}
+CONFIG_FILE="$(realpath -e -- "${CONFIG_FILE}")"
+load_backup_config "${CONFIG_FILE}"
+for required in \
+  BACKUP_ROOT BACKUP_EXTERNAL_DIR BACKUP_AGE_RECIPIENT_FILE \
+  BACKUP_SECRET_FILES BACKUP_MAX_SECONDS BACKUP_MODE BACKUP_STATE_DIR \
+  DB_PASSWORD_HOST_FILE DB_ROOT_PASSWORD_HOST_FILE \
+  TELEGRAM_BOT_TOKEN_HOST_FILE; do
+  require_backup_variable "${required}"
+done
+
+BACKUP_ROOT="$(realpath -e -- "${BACKUP_ROOT}")"
+EXTERNAL_DIR="$(realpath -e -- "${BACKUP_EXTERNAL_DIR}")"
+STATE_DIR="$(realpath -e -- "${BACKUP_STATE_DIR}")"
+AGE_RECIPIENT_FILE="${BACKUP_AGE_RECIPIENT_FILE}"
+SECRET_FILES="${BACKUP_SECRET_FILES}"
+MAX_SECONDS="${BACKUP_MAX_SECONDS}"
+BACKUP_MODE="${MODE_OVERRIDE:-${BACKUP_MODE}}"
+RAW_VOLUME_NAME="chromat_raw_data"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 WORK_DIR="${BACKUP_ROOT}/.tmp-${STAMP}"
 BACKUP_DIR="${BACKUP_ROOT}/${STAMP}"
@@ -19,33 +51,29 @@ PENDING_STATE="${STATE_DIR}/.raw-manifest-${STAMP}.pending"
 MAINTENANCE_ACTIVE=0
 WORKER_STOPPED=0
 
+docker_compose() {
+  sudo -- docker compose --project-directory "${ROOT_DIR}" -f "${ROOT_DIR}/compose.yaml" \
+    --env-file "${CONFIG_FILE}" "$@"
+}
+
 cleanup() {
   if (( MAINTENANCE_ACTIVE )); then
-    ${COMPOSE} exec -T api node -e \
+    docker_compose exec -T api node -e \
       'require("node:fs").rmSync("/app/uploads/.maintenance", { force: true })' \
       >/dev/null || true
   fi
   if (( WORKER_STOPPED )); then
-    ${COMPOSE} start worker >/dev/null || true
+    docker_compose start worker >/dev/null || true
   fi
   rm -f -- "${PENDING_STATE}"
   rm -rf -- "${WORK_DIR}"
 }
 trap cleanup EXIT
 
-mkdir -p -- "${WORK_DIR}" "${BACKUP_ROOT}" "${STATE_DIR}"
-if [[ -z "${AGE_RECIPIENT_FILE}" || ! -r "${AGE_RECIPIENT_FILE}" ]]; then
-  printf 'BACKUP_AGE_RECIPIENT_FILE must point to a readable age recipient file\n' >&2
-  exit 2
-fi
-if [[ -z "${EXTERNAL_DIR}" ]]; then
-  printf 'BACKUP_EXTERNAL_DIR must point to the mounted external backup directory\n' >&2
-  exit 2
-fi
-if [[ -z "${SECRET_FILES}" ]]; then
-  printf 'BACKUP_SECRET_FILES must list service secret files to protect\n' >&2
-  exit 2
-fi
+require_secure_directory BACKUP_ROOT "${BACKUP_ROOT}"
+require_secure_directory BACKUP_STATE_DIR "${STATE_DIR}"
+require_secure_file BACKUP_AGE_RECIPIENT_FILE "${AGE_RECIPIENT_FILE}"
+require_secure_directory BACKUP_EXTERNAL_DIR "${EXTERNAL_DIR}"
 if ! [[ "${MAX_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
   printf 'BACKUP_MAX_SECONDS must be a positive integer\n' >&2
   exit 2
@@ -58,7 +86,6 @@ command -v age >/dev/null || {
   printf 'age is required for encrypted backups\n' >&2
   exit 2
 }
-EXTERNAL_DIR="$(realpath -m -- "${EXTERNAL_DIR}")"
 command -v findmnt >/dev/null || {
   printf 'findmnt is required to validate the external backup mount\n' >&2
   exit 2
@@ -75,13 +102,22 @@ case "${EXTERNAL_DIR}/" in
     ;;
 esac
 read -r -a secret_files <<<"${SECRET_FILES}"
+required_service_secrets=(
+  "${DB_PASSWORD_HOST_FILE}"
+  "${DB_ROOT_PASSWORD_HOST_FILE}"
+  "${TELEGRAM_BOT_TOKEN_HOST_FILE}"
+)
+declare -A required_service_secret_paths=()
+for required_secret in "${required_service_secrets[@]}"; do
+  require_private_file configured-service-secret "${required_secret}"
+  required_service_secret_paths["$(realpath -e -- "${required_secret}")"]=1
+done
 mkdir -p -- "${WORK_DIR}/secrets"
 declare -A secret_names=()
+declare -A configured_secret_paths=()
 for secret_file in "${secret_files[@]}"; do
-  [[ -r "${secret_file}" ]] || {
-    printf 'Configured backup secret is not readable: %s\n' "${secret_file}" >&2
-    exit 2
-  }
+  secret_file="$(realpath -e -- "${secret_file}")"
+  require_private_file BACKUP_SECRET_FILES "${secret_file}"
   secret_name="$(basename -- "${secret_file}")"
   [[ "${secret_name}" != "ca.key" && "${secret_name}" != "ca-root.key" ]] || {
     printf 'The CA private key must remain outside the server backup\n' >&2
@@ -91,8 +127,20 @@ for secret_file in "${secret_files[@]}"; do
     printf 'Duplicate backup secret basename: %s\n' "${secret_name}" >&2
     exit 2
   }
+  [[ -z "${configured_secret_paths[${secret_file}]+x}" ]] || {
+    printf 'Duplicate backup secret path: %s\n' "${secret_file}" >&2
+    exit 2
+  }
   secret_names["${secret_name}"]=1
+  configured_secret_paths["${secret_file}"]=1
   cp -- "${secret_file}" "${WORK_DIR}/secrets/${secret_name}"
+done
+for required_secret in "${!required_service_secret_paths[@]}"; do
+  [[ -n "${configured_secret_paths[${required_secret}]+x}" ]] || {
+    printf 'BACKUP_SECRET_FILES must include configured service secret: %s\n' \
+      "${required_secret}" >&2
+    exit 2
+  }
 done
 start_time="$(date +%s)"
 check_deadline() {
@@ -101,18 +149,18 @@ check_deadline() {
     return 1
   fi
 }
-${COMPOSE} exec -T api node -e \
+docker_compose exec -T api node -e \
   'require("node:fs").writeFileSync("/app/uploads/.maintenance", "backup\n")'
 MAINTENANCE_ACTIVE=1
-${COMPOSE} stop worker >/dev/null
+docker_compose stop worker >/dev/null
 WORKER_STOPPED=1
 
-${COMPOSE} exec -T db sh -c \
+docker_compose exec -T db sh -c \
   'mariadb-dump --single-transaction --routines --triggers -u root -p"$(cat /run/secrets/db_root_password)" "$MARIADB_DATABASE"' \
   >"${WORK_DIR}/database.sql"
 check_deadline
 
-docker run --rm --network none \
+sudo -- docker run --rm --network none \
   -v "${RAW_VOLUME_NAME}:/raw:ro" \
   -v "${WORK_DIR}:/backup" \
   busybox:1.36.1 sh -c '
@@ -152,7 +200,7 @@ else
   : >"${WORK_DIR}/raw-deletions.tsv"
 fi
 cp -- "${WORK_DIR}/current-raw-manifest.tsv" "${WORK_DIR}/raw-manifest.tsv"
-docker run --rm --network none \
+sudo -- docker run --rm --network none \
   -v "${RAW_VOLUME_NAME}:/raw:ro" \
   -v "${WORK_DIR}:/backup" \
   busybox:1.36.1 sh -c '
@@ -192,9 +240,8 @@ cp -- "${WORK_DIR}/current-raw-manifest.tsv" "${PENDING_STATE}"
 rm -f -- "${WORK_DIR}/current-raw-manifest.tsv" "${WORK_DIR}/raw-selection.txt"
 
 mv -- "${WORK_DIR}" "${BACKUP_DIR}"
-${COMPOSE} exec -T api node -e \
+docker_compose exec -T api node -e \
   'require("node:fs").rmSync("/app/uploads/.maintenance", { force: true })'
-mkdir -p -- "${EXTERNAL_DIR}"
 cp -a -- "${BACKUP_DIR}" "${EXTERNAL_DIR}/"
 check_deadline
 printf '%s\n' "${BACKUP_DIR}" >"${BACKUP_ROOT}/last-successful"
@@ -206,6 +253,6 @@ else
   rm -f -- "${PENDING_STATE}"
 fi
 MAINTENANCE_ACTIVE=0
-${COMPOSE} start worker >/dev/null
+docker_compose start worker >/dev/null
 WORKER_STOPPED=0
 printf '%s\n' "${BACKUP_DIR}"

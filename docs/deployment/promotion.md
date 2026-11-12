@@ -14,6 +14,11 @@ backup → verificación → migraciones compatibles → servicios
 
 No hay CI/CD, Kubernetes, alta disponibilidad ni rollback automático.
 
+Todos los comandos de Compose de este documento usan la configuración
+persistente `/etc/chromat/production.env` y el `compose.yaml` de la release
+que se está promoviendo. Esto fija la base para rutas relativas como
+`MODEL_HOST_PATH`, independientemente del directorio actual del administrador.
+
 ## Evidencia y lock
 
 Define un identificador de promoción y prepara un directorio de evidencia
@@ -23,6 +28,7 @@ fuera de la release:
 set -o errexit -o nounset -o pipefail
 export PROMOTION_ID=20261109-1
 export EVIDENCE_DIR=/srv/chromat/promotions/$PROMOTION_ID
+export RELEASE_DIR=/srv/chromat/releases/$PROMOTION_ID
 sudo install -d -m 0750 "$EVIDENCE_DIR"
 exec 9>/run/lock/chromat-promotion.lock
 flock -n 9 || { echo "another promotion is active" >&2; exit 1; }
@@ -32,7 +38,7 @@ Registra el commit, manifiesto, versión de Ubuntu/Docker/Compose, operador,
 hora UTC y los checksums en `EVIDENCE_DIR`. No se inicia una segunda promoción
 mientras el lock exista.
 
-## 1. Cerrar el tráfico y validar precondiciones
+## 1. Cerrar el tráfico, verificar el paquete y cargar imágenes
 
 Antes de cargar la release, conserva la regla SSH de administración y cierra
 temporalmente TCP/443 para clientes externos:
@@ -42,12 +48,29 @@ sudo ufw delete allow 443/tcp
 sudo ufw status verbose
 ```
 
-No se abre TCP/80. Verifica antes de tocar la base:
+No se abre TCP/80. Antes de cargar imágenes se verifica la integridad del
+paquete transferido y su autenticidad por el canal operativo aprobado; el
+checksum detecta alteraciones accidentales pero no sustituye esa autenticidad.
+La carga siguiente solo importa los `tar` que ya pasaron esa verificación y no
+construye ni descarga imágenes:
 
 ```bash
-scripts/verify-artifacts.sh /srv/chromat/releases/$PROMOTION_ID
-scripts/check-tls-expiry.sh /srv/chromat/tls/server.crt 30
-docker compose --env-file production.env config --quiet
+sudo "$RELEASE_DIR/scripts/verify-artifacts.sh" "$RELEASE_DIR"
+for image_archive in "$RELEASE_DIR"/images/*.tar; do
+  sudo docker load --input "$image_archive"
+done
+```
+
+Después de `docker load`, el preflight compara los ID de las imágenes cargadas
+con el manifiesto, valida secretos, TLS y el contrato de backup; Compose solo
+renderiza la configuración y no construye ni descarga imágenes:
+
+```bash
+sudo "$RELEASE_DIR/scripts/verify-production-environment.sh" \
+  "$RELEASE_DIR" /etc/chromat/production.env
+sudo "$RELEASE_DIR/scripts/check-tls-expiry.sh" /srv/chromat/tls/server.crt 30
+sudo docker compose --project-directory "$RELEASE_DIR" -f "$RELEASE_DIR/compose.yaml" \
+  --env-file /etc/chromat/production.env config --quiet
 df -h /srv/chromat /var/lib/docker
 ss -lntup
 ```
@@ -59,14 +82,26 @@ puerto publicado. Un fallo conserva la evidencia y termina aquí.
 ## 2. Backup y verificación
 
 Ejecuta un backup completo antes de modificar la base y verifica el directorio
-local o su copia externa:
+local o su copia externa. El script recibe el archivo explícitamente: no se
+carga `production.env` en el shell ni se usa `sudo -E`.
 
 ```bash
 set -o pipefail
-export BACKUP_MODE=full
-scripts/backup.sh | tee "$EVIDENCE_DIR/backup.path"
+sudo "$RELEASE_DIR/scripts/backup.sh" \
+  --config /etc/chromat/production.env --mode full \
+  | tee "$EVIDENCE_DIR/backup.path"
 backup_dir="$(cat "$EVIDENCE_DIR/backup.path" | tail -n 1)"
-scripts/verify-backup.sh "$backup_dir" \
+```
+
+No copies la identidad privada `age` a la VM. Sigue la preparación del host
+aislado definida en `docs/deployment/backups.md`; allí, con la copia externa
+montada y la identidad conectada por el custodio, verifica el mismo backup:
+
+```bash
+sudo /ruta/release/scripts/verify-backup.sh \
+  --config /srv/chromat/restore/restore.env \
+  --identity-file /media/custodian/backup-age-identity \
+  "/mnt/chromat-backups/$(basename "$backup_dir")" \
   | tee "$EVIDENCE_DIR/backup-verification.txt"
 ```
 
@@ -85,7 +120,8 @@ ejecute las migraciones; antes de abrir tráfico, conserva los logs y confirma
 que todas las versiones esperadas aparecen en `schema_migrations`:
 
 ```bash
-docker compose --env-file production.env up -d db
+sudo docker compose --project-directory "$RELEASE_DIR" -f "$RELEASE_DIR/compose.yaml" \
+  --env-file /etc/chromat/production.env up -d db
 ```
 
 Si la migración no es compatible hacia atrás, no se intenta volver a una
@@ -97,11 +133,15 @@ el backup verificado asociado.
 Arranca la release sin construir ni descargar imágenes:
 
 ```bash
-docker compose --env-file production.env up -d --no-build
-docker compose --env-file production.env ps
-docker compose --env-file production.env logs --no-color api worker telegram-worker \
+sudo docker compose --project-directory "$RELEASE_DIR" -f "$RELEASE_DIR/compose.yaml" \
+  --env-file /etc/chromat/production.env up -d --no-build
+sudo docker compose --project-directory "$RELEASE_DIR" -f "$RELEASE_DIR/compose.yaml" \
+  --env-file /etc/chromat/production.env ps
+sudo docker compose --project-directory "$RELEASE_DIR" -f "$RELEASE_DIR/compose.yaml" \
+  --env-file /etc/chromat/production.env logs --no-color api worker telegram-worker \
   | tee "$EVIDENCE_DIR/migrations.log"
-docker compose --env-file production.env exec -T db \
+sudo docker compose --project-directory "$RELEASE_DIR" -f "$RELEASE_DIR/compose.yaml" \
+  --env-file /etc/chromat/production.env exec -T db \
   sh -c 'mariadb -u root -p"$(cat /run/secrets/db_root_password)" "$MARIADB_DATABASE" \
     -e "SELECT version FROM schema_migrations ORDER BY version"'
 ```
@@ -111,10 +151,11 @@ Espera a que MariaDB, API e inferencia estén saludables y confirma que
 
 ```bash
 for service in db api worker telegram-worker inference nginx; do
-  docker compose --env-file production.env ps --status running "$service" \
+  sudo docker compose --project-directory "$RELEASE_DIR" -f "$RELEASE_DIR/compose.yaml" \
+    --env-file /etc/chromat/production.env ps --status running "$service" \
     | grep -q "$service"
 done
-docker inspect --format '{{.Name}} {{.State.Health.Status}}' \
+sudo docker inspect --format '{{.Name}} {{.State.Health.Status}}' \
   chromat-db-1 chromat-api-1 chromat-inference-1
 ```
 
@@ -151,7 +192,7 @@ ADMIN_PASSWORD="$ADMIN_PASSWORD" \
 SMOKE_SOURCE_ID="$SMOKE_SOURCE_ID" \
 SMOKE_SOURCE_API_KEY="$SMOKE_SOURCE_API_KEY" \
 FOREIGN_EVENT_ID="$FOREIGN_EVENT_ID" \
-tests/smoke/run.sh | tee "$EVIDENCE_DIR/smoke.log"
+"$RELEASE_DIR/tests/smoke/run.sh" | tee "$EVIDENCE_DIR/smoke.log"
 ```
 
 El conjunto cubre autenticación, gestión de fuentes, ingesta idempotente,
@@ -164,7 +205,8 @@ El smoke no envía un mensaje real a Telegram. Valida la salida HTTPS del
 `telegram-worker` por separado, sin convertirla en dependencia del readiness:
 
 ```bash
-docker compose --env-file production.env exec -T telegram-worker \
+sudo docker compose --project-directory "$RELEASE_DIR" -f "$RELEASE_DIR/compose.yaml" \
+  --env-file /etc/chromat/production.env exec -T telegram-worker \
   node -e "fetch('https://api.telegram.org').then(r => { if (!r.ok) process.exit(1) })"
 ```
 
@@ -195,15 +237,17 @@ el rollback de aplicación puede usar `previous`:
 
 ```bash
 sudo ufw delete allow 443/tcp
-docker compose --env-file production.env down
+sudo docker compose --project-directory "$RELEASE_DIR" -f "$RELEASE_DIR/compose.yaml" \
+  --env-file /etc/chromat/production.env down
 previous_release="$(readlink -f /srv/chromat/previous)"
 test -d "$previous_release"
 for image_archive in "$previous_release"/images/*.tar; do
-  docker load --input "$image_archive"
+  sudo docker load --input "$image_archive"
 done
 sudo ln -sfn "$previous_release" /srv/chromat/active
-cd /srv/chromat/active
-docker compose --env-file production.env up -d --no-build
+export RELEASE_DIR="$previous_release"
+sudo docker compose --project-directory "$RELEASE_DIR" -f "$RELEASE_DIR/compose.yaml" \
+  --env-file /etc/chromat/production.env up -d --no-build
 ```
 
 Solo se revierte dentro del rango de compatibilidad declarado por las

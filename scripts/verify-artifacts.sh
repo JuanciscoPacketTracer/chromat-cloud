@@ -35,7 +35,9 @@ production_env="$package_dir/production.env.example"
 for required_path in \
   scripts/backup.sh \
   scripts/check-tls-expiry.sh \
+  scripts/prepare-ubuntu-production-host.sh \
   scripts/verify-artifacts.sh \
+  scripts/verify-production-environment.sh \
   scripts/verify-backup.sh \
   tests/smoke/run.sh \
   docs/deployment/promotion.md; do
@@ -43,6 +45,10 @@ for required_path in \
     printf 'artifact package is missing operational file: %s\n' "$required_path" >&2
     exit 1
   }
+  if [[ "$required_path" == scripts/* && ! -x "$package_dir/$required_path" ]]; then
+    printf 'artifact package operational script is not executable: %s\n' "$required_path" >&2
+    exit 1
+  fi
 done
 
 python3 - "$manifest" "$package_dir" "$production_env" <<'PY'

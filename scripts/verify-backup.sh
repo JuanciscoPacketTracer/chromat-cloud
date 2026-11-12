@@ -1,32 +1,89 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-BACKUP_DIR="${1:-}"
-if [[ -z "${BACKUP_DIR}" || ! -d "${BACKUP_DIR}" ]]; then
-  printf 'Usage: %s <backup-directory>\n' "$0" >&2
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${ROOT_DIR}/scripts/lib/backup-config.sh"
+
+CONFIG_FILE=
+AGE_IDENTITY_FILE=
+BACKUP_DIR=
+BASE_BACKUP_DIR=
+while (($#)); do
+  case "$1" in
+    --config)
+      CONFIG_FILE="${2:-}"
+      shift 2
+      ;;
+    --identity-file)
+      AGE_IDENTITY_FILE="${2:-}"
+      shift 2
+      ;;
+    --base-backup-dir)
+      BASE_BACKUP_DIR="${2:-}"
+      shift 2
+      ;;
+    -*)
+      printf 'Usage: %s --config <production-env-file> [--identity-file <file>] [--base-backup-dir <directory>] <backup-directory>\n' \
+        "$0" >&2
+      exit 2
+      ;;
+    *)
+      [[ -z "${BACKUP_DIR}" ]] || {
+        printf 'Usage: %s --config <production-env-file> [--identity-file <file>] [--base-backup-dir <directory>] <backup-directory>\n' \
+          "$0" >&2
+        exit 2
+      }
+      BACKUP_DIR="$1"
+      shift
+      ;;
+  esac
+done
+if [[ -z "${CONFIG_FILE}" || -z "${BACKUP_DIR}" || ! -d "${BACKUP_DIR}" ]]; then
+  printf 'Usage: %s --config <production-env-file> [--identity-file <file>] [--base-backup-dir <directory>] <backup-directory>\n' \
+    "$0" >&2
   exit 2
 fi
+CONFIG_FILE="$(realpath -e -- "${CONFIG_FILE}")"
+BACKUP_DIR="$(realpath -e -- "${BACKUP_DIR}")"
+load_backup_config "${CONFIG_FILE}"
 
 VERIFY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/chromat-restore-check.XXXXXX")"
 RESTORE_CONTAINER="chromat-restore-check-${RANDOM}-${RANDOM}"
-RESTORE_IMAGE="${RESTORE_IMAGE:-mariadb:11.8.2}"
-AGE_IDENTITY_FILE="${BACKUP_AGE_IDENTITY_FILE:-}"
-BASE_BACKUP_DIR="${BACKUP_BASE_DIR:-}"
+RESTORE_IMAGE="${CHROMAT_DB_IMAGE:-mariadb:11.8.2}"
+if [[ -n "${BASE_BACKUP_DIR}" ]]; then
+  BASE_BACKUP_DIR="$(realpath -e -- "${BASE_BACKUP_DIR}")"
+fi
 ENCRYPTED_BACKUP=0
 [[ -f "${BACKUP_DIR}/raw.tar.gz.age" ]] && ENCRYPTED_BACKUP=1
+RESTORE_PASSWORD_FILE="${VERIFY_DIR}/restore-root-password"
+RESTORE_CLIENT_CONFIG="${VERIFY_DIR}/restore-client.cnf"
+RESTORE_ENV_FILE="${VERIFY_DIR}/restore.env"
 cleanup() {
-  docker rm -f "${RESTORE_CONTAINER}" >/dev/null 2>&1 || true
+  sudo -- docker rm -f "${RESTORE_CONTAINER}" >/dev/null 2>&1 || true
   rm -rf -- "${VERIFY_DIR}"
 }
 trap cleanup EXIT
+
+umask 077
+command -v openssl >/dev/null || {
+  printf 'openssl is required to create an isolated restore credential\n' >&2
+  exit 2
+}
+openssl rand -hex 32 >"${RESTORE_PASSWORD_FILE}"
+{
+  printf '[client]\nuser=root\npassword='
+  tr -d '\n' <"${RESTORE_PASSWORD_FILE}"
+  printf '\n'
+} >"${RESTORE_CLIENT_CONFIG}"
+cat >"${RESTORE_ENV_FILE}" <<'EOF'
+MARIADB_DATABASE=chromat_restore
+MARIADB_ROOT_PASSWORD_FILE=/run/secrets/restore_root_password
+EOF
 (
   cd -- "${BACKUP_DIR}"
   sha256sum --check checksums.sha256
   if [[ -f raw.tar.gz.age ]]; then
-    [[ -r "${AGE_IDENTITY_FILE}" ]] || {
-      printf 'BACKUP_AGE_IDENTITY_FILE is required for encrypted backups\n' >&2
-      exit 2
-    }
+    require_private_file 'age identity file' "${AGE_IDENTITY_FILE}"
     command -v age >/dev/null || {
       printf 'age is required to verify encrypted backups\n' >&2
       exit 2
@@ -86,14 +143,20 @@ trap cleanup EXIT
 
 mkdir -p "${VERIFY_DIR}/configuration"
 tar -xzf "${VERIFY_DIR}/configuration.tar.gz" -C "${VERIFY_DIR}/configuration"
-docker run -d --network none --name "${RESTORE_CONTAINER}" \
-  -e MARIADB_DATABASE=chromat_restore \
-  -e MARIADB_ROOT_PASSWORD=restore-verification \
+sudo -- docker run -d --network none --name "${RESTORE_CONTAINER}" \
+  --env-file "${RESTORE_ENV_FILE}" \
+  -v "${RESTORE_PASSWORD_FILE}:/run/secrets/restore_root_password:ro" \
+  -v "${RESTORE_CLIENT_CONFIG}:/run/secrets/restore-client.cnf:ro" \
   "${RESTORE_IMAGE}" >/dev/null
 
+restore_sql() {
+  sudo -- docker exec -i "${RESTORE_CONTAINER}" mariadb \
+    --defaults-extra-file=/run/secrets/restore-client.cnf chromat_restore "$@"
+}
+
 for attempt in $(seq 1 60); do
-  if docker exec "${RESTORE_CONTAINER}" mariadb-admin \
-    -uroot -prestore-verification ping --silent >/dev/null 2>&1; then
+  if restore_sql -e 'SELECT 1' \
+    >/dev/null 2>&1; then
     break
   fi
   if [[ "${attempt}" == 60 ]]; then
@@ -105,18 +168,20 @@ done
 
 sed -E 's/^USE .+;$/USE `chromat_restore`;/' \
   "${VERIFY_DIR}/database.sql" >"${VERIFY_DIR}/database-import.sql"
-docker exec -i "${RESTORE_CONTAINER}" mariadb \
-  -uroot -prestore-verification chromat_restore <"${VERIFY_DIR}/database-import.sql"
+if ! restore_sql <"${VERIFY_DIR}/database-import.sql"; then
+  printf 'Failed to import the restored database\n' >&2
+  exit 1
+fi
 
 while IFS= read -r migration; do
   version="${migration%%_*}"
   name="${migration%.sql}"
   expected="${version}_${name#*_}"
-  found="$(
-    docker exec "${RESTORE_CONTAINER}" mariadb -N -B \
-      -uroot -prestore-verification chromat_restore \
-      -e "SELECT COUNT(*) FROM schema_migrations WHERE version = '${expected}'"
-  )"
+  if ! found="$(restore_sql -N -B \
+    -e "SELECT COUNT(*) FROM schema_migrations WHERE version = '${expected}'")"; then
+    printf 'Failed to inspect restored migration: %s\n' "${expected}" >&2
+    exit 1
+  fi
   if [[ "${found}" != "1" ]]; then
     printf 'Pending migration in restored database: %s\n' "${expected}" >&2
     exit 1
@@ -124,10 +189,12 @@ while IFS= read -r migration; do
 done < <(find "${VERIFY_DIR}/configuration/db/migrations" -maxdepth 1 -type f \
   -name '[0-9][0-9][0-9]_*.sql' -printf '%f\n' | sort)
 
-docker exec "${RESTORE_CONTAINER}" mariadb -N -B \
-  -uroot -prestore-verification chromat_restore \
+if ! restore_sql -N -B \
   -e "SELECT storage_path, sha256 FROM raw_files WHERE storage_path IS NOT NULL ORDER BY storage_path" \
-  >"${VERIFY_DIR}/raw-references.tsv"
+  >"${VERIFY_DIR}/raw-references.tsv"; then
+  printf 'Failed to inspect restored raw-file references\n' >&2
+  exit 1
+fi
 
 while IFS=$'\t' read -r storage_path expected_hash; do
   [[ -n "${storage_path}" ]] || continue

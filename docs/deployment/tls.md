@@ -100,9 +100,11 @@ scripts/check-tls-expiry.sh /srv/chromat/tls/server.crt 30
 
 Para renovar, la CA externa genera un nuevo `server.key` y `server.crt` con
 los mismos SAN requeridos. Copia temporalmente solo esos tres materiales a un
-directorio de staging, repite la verificación e instala con
-`install-production-tls.sh`. No reemplaces `ca.crt` salvo que se esté
-rotando la CA, una operación fuera de este issue.
+directorio de staging, repite la verificación e instala explícitamente con
+`install-production-tls.sh --replace`. Sin `--replace`, el script se detiene
+si ya existen materiales TLS diferentes; una instalación normal nunca
+sobrescribe certificados. No reemplaces `ca.crt` salvo que se esté rotando la
+CA, una operación fuera de este issue.
 
 Recarga únicamente Nginx después de validar la configuración:
 

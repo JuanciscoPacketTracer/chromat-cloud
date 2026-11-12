@@ -105,8 +105,10 @@ cp -R -- docs/deployment "$package_dir/docs/"
     -e 's#^MODEL_HOST_PATH=.*#MODEL_HOST_PATH=./model/deterministic-model.json#' \
     -e 's#^TLS_CERT_HOST_PATH=.*#TLS_CERT_HOST_PATH=/srv/chromat/tls/server.crt#' \
     -e 's#^TLS_KEY_HOST_PATH=.*#TLS_KEY_HOST_PATH=/srv/chromat/tls/server.key#' \
+    -e 's#^DB_PASSWORD_HOST_FILE=.*#DB_PASSWORD_HOST_FILE=/etc/chromat/secrets/db_password#' \
+    -e 's#^DB_ROOT_PASSWORD_HOST_FILE=.*#DB_ROOT_PASSWORD_HOST_FILE=/etc/chromat/secrets/db_root_password#' \
+    -e 's#^TELEGRAM_BOT_TOKEN_HOST_FILE=.*#TELEGRAM_BOT_TOKEN_HOST_FILE=/etc/chromat/secrets/telegram_bot_token#' \
     .env.example
-  printf 'TELEGRAM_BOT_TOKEN_HOST_FILE=/etc/chromat/secrets/telegram_bot_token\n'
 } >"$package_dir/production.env.example"
 
 mkdir -p "$package_dir/.metadata"
