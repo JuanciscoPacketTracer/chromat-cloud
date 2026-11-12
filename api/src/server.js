@@ -7,6 +7,8 @@ import os from "node:os";
 import path from "node:path";
 import argon2 from "argon2";
 import mysql from "mysql2/promise";
+import { isBelowFreeSpaceThreshold } from "./capacity.js";
+import { databaseConfig } from "./database.js";
 import { migrate } from "./migrate.js";
 import { mysqlToIso, toMysqlTimestamp } from "./time.js";
 
@@ -17,18 +19,25 @@ const maxUploadBytes = Number.parseInt(
 );
 const rawRoot = process.env.RAW_DATA_DIR ?? "/app/uploads";
 const maintenanceMarker = path.join(rawRoot, ".maintenance");
+const capacityProtectionMarker = path.join(rawRoot, ".capacity-protection");
+const minimumFreePercent = Number.parseFloat(
+  process.env.RAW_MIN_FREE_PERCENT ?? "20",
+);
+if (!Number.isFinite(minimumFreePercent) || minimumFreePercent < 0 || minimumFreePercent > 100) {
+  throw new Error("RAW_MIN_FREE_PERCENT must be between 0 and 100");
+}
 const pool = mysql.createPool({
-  host: process.env.DB_HOST ?? "db",
-  port: Number.parseInt(process.env.DB_PORT ?? "3306", 10),
-  database: process.env.DB_NAME ?? "chromat",
-  user: process.env.DB_USER ?? "chromat_user",
-  password: process.env.DB_PASSWORD,
-  connectionLimit: 4,
+  ...databaseConfig(4),
   enableKeepAlive: true,
-  dateStrings: true,
 });
 const rateBuckets = new Map();
 const loginBuckets = new Map();
+const httpMetrics = {
+  startedAt: new Date().toISOString(),
+  requests: 0,
+  totalLatencyMs: 0,
+  statusCodes: {},
+};
 
 function sendJson(response, statusCode, body, headers = {}) {
   const payload = JSON.stringify(body);
@@ -235,8 +244,8 @@ async function adminListSourceStateHistory(request, response, sourceId, parsedUr
   );
 }
 
-async function audit(action, request, operatorId = null, metadata = null) {
-  await pool.query(
+async function writeAudit(connection, action, request, operatorId = null, metadata = null) {
+  await connection.query(
     `INSERT INTO audit_log
       (occurred_at, action, operator_id, request_ip, metadata)
      VALUES (UTC_TIMESTAMP(3), ?, ?, ?, ?)`,
@@ -247,6 +256,10 @@ async function audit(action, request, operatorId = null, metadata = null) {
       metadata ? JSON.stringify(metadata) : null,
     ],
   );
+}
+
+async function audit(action, request, operatorId = null, metadata = null) {
+  await writeAudit(pool, action, request, operatorId, metadata);
 }
 
 function consumeLoginLimit(request) {
@@ -392,6 +405,52 @@ async function adminAudit(request, response) {
       request_ip: row.request_ip,
       metadata: row.metadata,
     })),
+  });
+}
+
+async function adminMetrics(request, response) {
+  const session = await authenticateAdmin(request, response);
+  if (!session) return;
+  const [jobRows] = await pool.query(
+    `SELECT state, COUNT(*) AS count, MIN(available_at) AS oldest_available_at
+       FROM jobs
+      GROUP BY state`,
+  );
+  let storage = null;
+  try {
+    const stats = fs.statfsSync(rawRoot);
+    const totalBytes = Number(stats.blocks) * Number(stats.bsize);
+    const availableBytes = Number(stats.bavail) * Number(stats.bsize);
+    storage = {
+      total_bytes: totalBytes,
+      available_bytes: availableBytes,
+      available_ratio: totalBytes > 0 ? availableBytes / totalBytes : null,
+    };
+  } catch {
+    storage = { available: false };
+  }
+  const statusCodes = Object.fromEntries(
+    Object.entries(httpMetrics.statusCodes).map(([code, count]) => [code, count]),
+  );
+  sendJson(response, 200, {
+    started_at: httpMetrics.startedAt,
+    http: {
+      requests: httpMetrics.requests,
+      average_latency_ms: httpMetrics.requests > 0
+        ? httpMetrics.totalLatencyMs / httpMetrics.requests
+        : 0,
+      status_codes: statusCodes,
+    },
+    jobs: Object.fromEntries(jobRows.map((row) => [
+      row.state,
+      {
+        count: Number(row.count),
+        oldest_available_at: row.oldest_available_at
+          ? mysqlToIso(row.oldest_available_at)
+          : null,
+      },
+    ])),
+    storage,
   });
 }
 
@@ -743,6 +802,69 @@ async function adminReemitAlert(request, response, alertId) {
     alert_id: alertId,
   });
   sendJson(response, 200, { alert_id: alertId, status: "pending" });
+}
+
+async function adminReprocessEvent(request, response, sourceId, eventId) {
+  const session = await adminSessionWithCsrf(request, response);
+  if (!session) return;
+  const body = await parseJsonBody(request);
+  const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+  if (!reason || reason.length > 500) {
+    errorResponse(response, 422, "invalid_reason", "A reason of 1..500 characters is required");
+    return;
+  }
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [rows] = await connection.query(
+      `SELECT e.status, j.state
+         FROM monitoring_events e
+         JOIN jobs j ON j.source_id = e.source_id AND j.event_id = e.event_id
+        WHERE e.source_id = ? AND e.event_id = ?
+        FOR UPDATE`,
+      [sourceId, eventId],
+    );
+    if (rows.length !== 1) {
+      await connection.rollback();
+      errorResponse(response, 404, "not_found", "Event not found");
+      return;
+    }
+    if (rows[0].state === "leased") {
+      await connection.rollback();
+      errorResponse(response, 409, "processing", "Event is currently being processed");
+      return;
+    }
+    await connection.query(
+      `UPDATE jobs
+          SET state = 'queued', attempts = 0, available_at = UTC_TIMESTAMP(3),
+              lease_owner = NULL, lease_expires_at = NULL, last_error = NULL,
+              reprocessing = TRUE, updated_at = UTC_TIMESTAMP(3)
+        WHERE source_id = ? AND event_id = ?`,
+      [sourceId, eventId],
+    );
+    await connection.query(
+      `UPDATE monitoring_events
+          SET status = 'processing'
+        WHERE source_id = ? AND event_id = ?`,
+      [sourceId, eventId],
+    );
+    await writeAudit(connection, "event_reprocessed", request, session.operator_id, {
+      source_id: sourceId,
+      event_id: eventId,
+      reason,
+    });
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+  sendJson(response, 202, {
+    source_id: sourceId,
+    event_id: eventId,
+    status: "processing",
+  });
 }
 
 async function adminRotateSourceKey(request, response, sourceId) {
@@ -1134,6 +1256,82 @@ async function isMaintenanceActive() {
   }
 }
 
+function isCapacityProtectionActive() {
+  const stats = fs.statfsSync(rawRoot);
+  return isBelowFreeSpaceThreshold({
+    availableBytes: Number(stats.bavail) * Number(stats.bsize),
+    totalBytes: Number(stats.blocks) * Number(stats.bsize),
+  }, minimumFreePercent);
+}
+
+async function isIngestionPaused() {
+  if (await isMaintenanceActive()) return true;
+  try {
+    await fsp.access(capacityProtectionMarker, fs.constants.F_OK);
+    return true;
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  if (!isCapacityProtectionActive()) return false;
+  try {
+    await fsp.writeFile(capacityProtectionMarker, "capacity\n", { flag: "wx" });
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+  }
+  return true;
+}
+
+async function adminResumeCapacity(request, response) {
+  const session = await adminSessionWithCsrf(request, response);
+  if (!session) return;
+  if (isCapacityProtectionActive()) {
+    errorResponse(response, 409, "capacity_protection", "Free storage is still below the configured threshold");
+    return;
+  }
+  await fsp.rm(capacityProtectionMarker, { force: true });
+  await audit("capacity_protection_cleared", request, session.operator_id);
+  sendJson(response, 200, { status: "resumed" });
+}
+
+async function adminPauseCapacity(request, response) {
+  const session = await adminSessionWithCsrf(request, response);
+  if (!session) return;
+  await fsp.writeFile(capacityProtectionMarker, "operator\n");
+  await audit("capacity_protection_enabled", request, session.operator_id);
+  sendJson(response, 200, { status: "paused" });
+}
+
+async function finalizeRawFile(sourceId, eventId, relativePath, stagingRelativePath) {
+  const absolutePath = path.join(rawRoot, relativePath);
+  const stagingPath = path.join(rawRoot, stagingRelativePath);
+  await fsp.mkdir(path.dirname(absolutePath), { recursive: true, mode: 0o700 });
+  try {
+    await fsp.rename(stagingPath, absolutePath);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    await fsp.access(absolutePath);
+  }
+  const [result] = await pool.query(
+    `UPDATE raw_files
+        SET state = 'ready', staged_path = NULL
+      WHERE source_id = ? AND event_id = ? AND state = 'staged'`,
+    [sourceId, eventId],
+  );
+  if (result.affectedRows !== 1) {
+    throw new Error("raw_file_finalization_missing");
+  }
+}
+
+async function moveUploadToStaging(temporaryPath, stagingPath) {
+  try {
+    await fsp.rename(temporaryPath, stagingPath);
+  } catch (error) {
+    if (error.code !== "EXDEV") throw error;
+    await fsp.copyFile(temporaryPath, stagingPath, fs.constants.COPYFILE_EXCL);
+    await fsp.rm(temporaryPath, { force: true });
+  }
+}
+
 async function ingestEvent(request, response, sourceId) {
   let upload;
   try {
@@ -1165,15 +1363,27 @@ async function ingestEvent(request, response, sourceId) {
     const extension = image.mediaType === "image/png" ? "png" : "jpg";
     const relativePath = path.join("raw", sourceId, `${eventId}.${extension}`);
     const absolutePath = path.join(rawRoot, relativePath);
-    await fsp.mkdir(path.dirname(absolutePath), { recursive: true, mode: 0o700 });
+    const stagingRelativePath = path.join(
+      "raw",
+      ".staging",
+      sourceId,
+      `${eventId}.${extension}`,
+    );
+    const stagingPath = path.join(rawRoot, stagingRelativePath);
+    await fsp.mkdir(path.dirname(stagingPath), { recursive: true, mode: 0o700 });
 
     const connection = await pool.getConnection();
     let transactionStarted = false;
+    let committed = false;
     try {
       await connection.beginTransaction();
       transactionStarted = true;
       const [existingRows] = await connection.query(
-        "SELECT status, image_sha256, received_at FROM monitoring_events WHERE source_id = ? AND event_id = ? FOR UPDATE",
+        `SELECT e.status, e.image_sha256, e.received_at, r.storage_path, r.staged_path,
+                r.state AS raw_state
+           FROM monitoring_events e
+           JOIN raw_files r ON r.source_id = e.source_id AND r.event_id = e.event_id
+          WHERE e.source_id = ? AND e.event_id = ? FOR UPDATE`,
         [sourceId, eventId],
       );
       if (existingRows.length > 0) {
@@ -1189,6 +1399,14 @@ async function ingestEvent(request, response, sourceId) {
           );
           return;
         }
+        if (existing.raw_state === "staged") {
+          await finalizeRawFile(
+            sourceId,
+            eventId,
+            existing.storage_path,
+            existing.staged_path,
+          );
+        }
         const statusCode = ["pending", "processing"].includes(existing.status)
           ? 202
           : 200;
@@ -1201,7 +1419,7 @@ async function ingestEvent(request, response, sourceId) {
         return;
       }
 
-      await fsp.rename(upload.temporaryPath, absolutePath);
+      await moveUploadToStaging(upload.temporaryPath, stagingPath);
       const receivedMysql = toMysqlTimestamp(receivedAt);
       await connection.query(
         `INSERT INTO monitoring_events
@@ -1224,12 +1442,13 @@ async function ingestEvent(request, response, sourceId) {
       );
       await connection.query(
         `INSERT INTO raw_files
-          (source_id, event_id, storage_path, media_type, byte_size, sha256, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          (source_id, event_id, storage_path, staged_path, state, media_type, byte_size, sha256, created_at)
+         VALUES (?, ?, ?, ?, 'staged', ?, ?, ?, ?)`,
         [
           sourceId,
           eventId,
           relativePath,
+          stagingRelativePath,
           image.mediaType,
           image.byteSize,
           image.sha256,
@@ -1243,6 +1462,8 @@ async function ingestEvent(request, response, sourceId) {
         [sourceId, eventId, receivedMysql, receivedMysql],
       );
       await connection.commit();
+      committed = true;
+      await finalizeRawFile(sourceId, eventId, relativePath, stagingRelativePath);
       sendJson(response, 202, {
         event_id: eventId,
         status: "pending",
@@ -1251,7 +1472,9 @@ async function ingestEvent(request, response, sourceId) {
       });
     } catch (error) {
       if (transactionStarted) await connection.rollback();
-      await fsp.rm(absolutePath, { force: true });
+      if (!committed) {
+        await fsp.rm(stagingPath, { force: true });
+      }
       throw error;
     } finally {
       connection.release();
@@ -1354,6 +1577,15 @@ async function getEvent(request, response, sourceId, eventId) {
 }
 
 const server = http.createServer(async (request, response) => {
+  const requestStartedAt = process.hrtime.bigint();
+  response.once("finish", () => {
+    const latencyMs = Number(process.hrtime.bigint() - requestStartedAt) / 1e6;
+    httpMetrics.requests += 1;
+    httpMetrics.totalLatencyMs += latencyMs;
+    const statusCode = String(response.statusCode);
+    httpMetrics.statusCodes[statusCode] =
+      (httpMetrics.statusCodes[statusCode] ?? 0) + 1;
+  });
   try {
     if (request.method === "GET" && request.url === "/health/live") {
       sendJson(response, 200, { status: "ok" });
@@ -1382,6 +1614,24 @@ const server = http.createServer(async (request, response) => {
     }
     if (request.method === "GET" && parsedUrl.pathname === "/api/v1/admin/audit") {
       await adminAudit(request, response);
+      return;
+    }
+    if (request.method === "GET" && parsedUrl.pathname === "/api/v1/admin/metrics") {
+      await adminMetrics(request, response);
+      return;
+    }
+    if (
+      request.method === "POST" &&
+      parsedUrl.pathname === "/api/v1/admin/capacity/resume"
+    ) {
+      await adminResumeCapacity(request, response);
+      return;
+    }
+    if (
+      request.method === "POST" &&
+      parsedUrl.pathname === "/api/v1/admin/capacity/pause"
+    ) {
+      await adminPauseCapacity(request, response);
       return;
     }
     const adminAlertReemitMatch = parsedUrl.pathname.match(
@@ -1491,6 +1741,23 @@ const server = http.createServer(async (request, response) => {
         request,
         response,
         adminSourceEventsMatch[1].toLowerCase(),
+      );
+      return;
+    }
+    const adminReprocessEventMatch = parsedUrl.pathname.match(
+      /^\/api\/v1\/admin\/sources\/([0-9a-f-]{36})\/events\/([0-9a-f-]{36})\/reprocess$/i,
+    );
+    if (
+      request.method === "POST" &&
+      adminReprocessEventMatch &&
+      isUuidV4(adminReprocessEventMatch[1]) &&
+      isUuidV4(adminReprocessEventMatch[2])
+    ) {
+      await adminReprocessEvent(
+        request,
+        response,
+        adminReprocessEventMatch[1].toLowerCase(),
+        adminReprocessEventMatch[2].toLowerCase(),
       );
       return;
     }
@@ -1637,7 +1904,7 @@ const server = http.createServer(async (request, response) => {
     }
     const sourceId = await authenticate(request, response);
     if (!sourceId) return;
-    if (isIngestion && await isMaintenanceActive()) {
+    if (isIngestion && await isIngestionPaused()) {
       errorResponse(response, 503, "maintenance", "Ingestion is temporarily paused", {
         "retry-after": "60",
       });
@@ -1664,6 +1931,17 @@ const server = http.createServer(async (request, response) => {
 
 async function start() {
   await migrate();
+  const [stagedFiles] = await pool.query(
+    "SELECT source_id, event_id, storage_path, staged_path FROM raw_files WHERE state = 'staged'",
+  );
+  for (const rawFile of stagedFiles) {
+    await finalizeRawFile(
+      rawFile.source_id,
+      rawFile.event_id,
+      rawFile.storage_path,
+      rawFile.staged_path,
+    );
+  }
   server.listen(port, "0.0.0.0", () => {
     console.log(JSON.stringify({ event: "api_started", port }));
   });

@@ -1,17 +1,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import mysql from "mysql2/promise";
+import { databaseConfig } from "./database.js";
 
 const migrationRoot = process.env.MIGRATION_DIR ?? "/app/migrations";
 
 export async function migrate() {
   const pool = mysql.createPool({
-    host: process.env.DB_HOST ?? "db",
-    port: Number.parseInt(process.env.DB_PORT ?? "3306", 10),
-    database: process.env.DB_NAME ?? "chromat",
-    user: process.env.DB_USER ?? "chromat_user",
-    password: process.env.DB_PASSWORD,
-    connectionLimit: 1,
+    ...databaseConfig(1),
     multipleStatements: true,
   });
   const connection = await pool.getConnection();

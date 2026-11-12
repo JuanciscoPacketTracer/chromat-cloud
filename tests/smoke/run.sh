@@ -21,7 +21,8 @@ Optional environment:
   ALLOW_INSECURE_TLS=true
                  Explicitly allow self-signed certificates for local-only runs
   SMOKE_TESTS    Comma-separated scenarios or "all"
-                 ingestion,processing,inference,admin-auth,source-management
+                 ingestion,processing,inference,aggregation,migrations,
+                 capacity,admin-auth,source-management,telegram
   SMOKE_SOURCE_ID
                  Dedicated test source to clean after event scenarios
 EOF
@@ -39,7 +40,9 @@ fi
 [[ $# -eq 0 ]] || fail "unknown argument: $1"
 
 command -v curl >/dev/null || fail "curl is required"
-command -v docker >/dev/null || fail "docker is required"
+if [[ "${SMOKE_INTERNAL_CLIENT:-false}" != "true" ]]; then
+  command -v docker >/dev/null || fail "docker is required"
+fi
 command -v node >/dev/null || fail "node is required"
 if [[ "${ALLOW_INSECURE_TLS:-false}" != "true" ]]; then
   [[ -f "${CA_CERT:-}" ]] || fail "CA_CERT must point to the deployment CA certificate"
@@ -50,18 +53,34 @@ smoke_curl --silent --show-error --fail "$base_url/health/live" >/dev/null ||
 smoke_curl --silent --show-error --fail "$base_url/health/ready" >/dev/null ||
   fail "public readiness check failed: $base_url/health/ready"
 
-bash "$repo_root/tests/smoke/skeleton.sh"
+if [[ "${SMOKE_INTERNAL_CLIENT:-false}" != "true" ]]; then
+  bash "$repo_root/tests/smoke/skeleton.sh"
+fi
 
 if [[ "$selected_tests" == "all" ]]; then
-  selected_tests="ingestion,processing,inference,admin-auth,source-management"
+  selected_tests="ingestion,processing,inference,aggregation,migrations,capacity,admin-auth,source-management,telegram"
+fi
+if [[ "${SMOKE_INTERNAL_CLIENT:-false}" == "true" ]]; then
+  selected_tests="${selected_tests//,migrations/}"
+  selected_tests="${selected_tests/migrations,/}"
+  [[ "$selected_tests" != "migrations" ]] || selected_tests=""
 fi
 
 IFS=',' read -r -a tests <<<"$selected_tests"
 needs_source_cleanup=false
 for test_name in "${tests[@]}"; do
-  if [[ "$test_name" == "ingestion" || "$test_name" == "processing" || "$test_name" == "inference" ]]; then
-    needs_source_cleanup=true
-  fi
+  case "$test_name" in
+    ingestion|processing|inference)
+      needs_source_cleanup=true
+      ;;
+    aggregation)
+      : "${SMOKE_SOURCE_ID:?SMOKE_SOURCE_ID is required for aggregation}"
+      : "${ADMIN_USERNAME:?ADMIN_USERNAME is required for aggregation}"
+      : "${ADMIN_PASSWORD:?ADMIN_PASSWORD is required for aggregation}"
+      ;;
+    migrations)
+      ;;
+  esac
 done
 if [[ "$needs_source_cleanup" == true ]]; then
   : "${SMOKE_SOURCE_ID:?SMOKE_SOURCE_ID is required for event scenarios}"
@@ -71,6 +90,9 @@ fi
 
 cleanup_source() {
   local exit_status=$?
+  if [[ "${SMOKE_DEFER_SOURCE_CLEANUP:-false}" == "true" ]]; then
+    return "$exit_status"
+  fi
   if [[ "$needs_source_cleanup" != true ]]; then
     return "$exit_status"
   fi
@@ -101,9 +123,19 @@ for test_name in "${tests[@]}"; do
     processing|inference)
       : "${SMOKE_SOURCE_API_KEY:?SMOKE_SOURCE_API_KEY is required for $test_name}"
       ;;
+    aggregation)
+      ;;
+    capacity)
+      : "${SMOKE_SOURCE_API_KEY:?SMOKE_SOURCE_API_KEY is required for capacity}"
+      : "${ADMIN_USERNAME:?ADMIN_USERNAME is required for capacity}"
+      : "${ADMIN_PASSWORD:?ADMIN_PASSWORD is required for capacity}"
+      ;;
     admin-auth|source-management)
       : "${ADMIN_USERNAME:?ADMIN_USERNAME is required for $test_name}"
       : "${ADMIN_PASSWORD:?ADMIN_PASSWORD is required for $test_name}"
+      ;;
+    telegram)
+      : "${TELEGRAM_API_URL:?TELEGRAM_API_URL is required for telegram}"
       ;;
     "")
       fail "empty smoke test name"

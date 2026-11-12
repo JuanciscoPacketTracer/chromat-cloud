@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import mysql from "mysql2/promise";
 import { toMysqlTimestamp } from "./time.js";
+import { databaseConfig } from "./database.js";
 
 const nameIndex = process.argv.indexOf("--name");
 const name = nameIndex >= 0 ? process.argv[nameIndex + 1] : null;
@@ -15,13 +16,7 @@ const apiKeyPrefix = apiKey.slice(0, 20);
 const apiKeyHash = crypto.createHash("sha256").update(apiKey).digest();
 const mysqlTimestamp = toMysqlTimestamp(new Date());
 
-const connection = await mysql.createConnection({
-  host: process.env.DB_HOST ?? "db",
-  port: Number.parseInt(process.env.DB_PORT ?? "3306", 10),
-  database: process.env.DB_NAME ?? "chromat",
-  user: process.env.DB_USER ?? "chromat_user",
-  password: process.env.DB_PASSWORD,
-});
+const connection = await mysql.createConnection(databaseConfig());
 
 try {
   await connection.execute(

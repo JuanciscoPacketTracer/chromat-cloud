@@ -3,11 +3,13 @@ import fs from "node:fs/promises";
 import mysql from "mysql2/promise";
 import { migrate } from "./migrate.js";
 import { buildTelegramMessage, classifyTelegramResponse } from "./telegram.js";
+import { databaseConfig } from "./database.js";
 
 const pollMs = Number.parseInt(process.env.ALERT_POLL_MS ?? "1000", 10);
 const leaseSeconds = Number.parseInt(process.env.ALERT_LEASE_SECONDS ?? "30", 10);
 const maxAttempts = 3;
 const panelUrl = process.env.PANEL_URL ?? "https://chromat.lan/panel/";
+const telegramApiUrl = (process.env.TELEGRAM_API_URL ?? "https://api.telegram.org").replace(/\/$/, "");
 const tokenFile = process.env.TELEGRAM_BOT_TOKEN_FILE;
 const workerId = `${process.env.HOSTNAME ?? "telegram-worker"}-${crypto.randomUUID()}`;
 
@@ -17,15 +19,7 @@ await migrate();
 const token = (await fs.readFile(tokenFile, "utf8")).trim();
 if (!token) throw new Error("telegram_bot_token_empty");
 
-const pool = mysql.createPool({
-  host: process.env.DB_HOST ?? "db",
-  port: Number.parseInt(process.env.DB_PORT ?? "3306", 10),
-  database: process.env.DB_NAME ?? "chromat",
-  user: process.env.DB_USER ?? "chromat_user",
-  password: process.env.DB_PASSWORD,
-  connectionLimit: 2,
-  dateStrings: true,
-});
+const pool = mysql.createPool(databaseConfig(2));
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -83,7 +77,7 @@ async function deliver(alert) {
     return { kind: "permanent", error: "telegram_chat_id_missing" };
   }
   const response = await fetch(
-    `https://api.telegram.org/bot${token}/sendMessage`,
+    `${telegramApiUrl}/bot${token}/sendMessage`,
     {
       method: "POST",
       headers: { "content-type": "application/json" },

@@ -11,7 +11,7 @@ response_body="$(mktemp)"
 trap 'rm -f "$image_file" "$response_body"' EXIT
 
 base64 --decode >"$image_file" <<'PNG'
-iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNo+M8AAAOCAYB04NylAAAAAElFTkSuQmCC
 PNG
 
 smoke_curl --silent --show-error --fail-with-body \

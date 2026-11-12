@@ -27,8 +27,11 @@ fail() {
 [[ -f inference/models/deterministic-model.json ]] || fail "deterministic model is missing"
 [[ -f tests/smoke/processing.sh ]] || fail "processing smoke test is missing"
 [[ -f tests/smoke/inference.sh ]] || fail "inference smoke test is missing"
+[[ -f tests/smoke/aggregation.sh ]] || fail "aggregation smoke test is missing"
+[[ -f tests/smoke/migrations.sh ]] || fail "migration smoke test is missing"
 [[ -f tests/smoke/admin-auth.sh ]] || fail "admin auth smoke test is missing"
 [[ -f tests/smoke/source-management.sh ]] || fail "source management smoke test is missing"
+[[ -f tests/smoke/telegram.sh ]] || fail "telegram smoke test is missing"
 [[ -x tests/smoke/run.sh ]] || fail "smoke test runner is missing or not executable"
 [[ -f tests/smoke/curl.sh ]] || fail "smoke curl helper is missing"
 [[ -f scripts/dev-tls.sh ]] || fail "development TLS script is missing"
@@ -59,5 +62,9 @@ grep -q 'healthcheck:' "$compose_config" || fail "health checks are missing"
 grep -q '/etc/nginx/tls/server.crt' "$compose_config" || fail "development certificate is not mounted"
 grep -q '/health/ready' "$compose_config" || fail "API readiness is not checked"
 grep -q '/docker-entrypoint-initdb.d' "$compose_config" || fail "database migrations are not mounted"
+grep -q 'DB_PASSWORD_FILE' "$compose_config" || fail "database password file is not configured"
+if grep -q 'DB_PASSWORD:' "$compose_config"; then
+  fail "database password must not be passed through the environment"
+fi
 
 printf 'PASS: CHROMAT Server skeleton contract\n'

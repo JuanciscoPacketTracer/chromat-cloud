@@ -26,9 +26,8 @@ test("creates a pending maduro alert for a real-source transition", () => {
   });
 });
 
-test("does not create alerts for test sources or other transitions", () => {
-  const transition = { fromStage: "maduro", toStage: "otro", episodeSeq: 3 };
-
+test("does not create alerts for a qualifying transition from a test source", () => {
+  const transition = { fromStage: "verde", toStage: "maduro", episodeSeq: 3 };
   assert.equal(buildAlertCandidate({
     sourceId: "source-1",
     crop: "mango",
@@ -38,6 +37,10 @@ test("does not create alerts for test sources or other transitions", () => {
     chatId: "12345",
     isTest: true,
   }), null);
+});
+
+test("does not create alerts for other transitions", () => {
+  const transition = { fromStage: "maduro", toStage: "otro", episodeSeq: 3 };
   assert.equal(buildAlertCandidate({
     sourceId: "source-1",
     crop: "mango",

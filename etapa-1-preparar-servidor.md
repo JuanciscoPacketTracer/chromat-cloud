@@ -1,8 +1,14 @@
-# Etapa 1: Preparar el servidor
+# Etapa 1: Provisionar y endurecer Ubuntu Server
 
-Guía para dejar la máquina virtual con Ubuntu Server lista para alojar los servicios de Chromat Cloud (Nginx, API Node.js, inferencia en Python y MariaDB, todos en contenedores Docker).
+Runbook manual para dejar un único Ubuntu Server amd64 listo para ejecutar una
+release verificada de CHROMAT Server mediante Docker Compose. Fedora construye
+y valida los artefactos; este servidor no reconstruye imágenes ni monta código
+fuente.
 
-**Resultado esperado al terminar:** una VM con IP fija, acceso por SSH con llave, firewall activo, Docker y Docker Compose funcionando, y la estructura de carpetas del proyecto creada.
+**Resultado esperado al terminar:** un host Ubuntu 26.04 LTS amd64 con nombre
+`chromat.lan`, acceso administrativo por SSH con llave, almacenamiento
+validado, Docker y Compose instalados desde el repositorio oficial, firewall
+activo y un servicio de arranque controlado para la release activa.
 
 ---
 
@@ -14,25 +20,14 @@ Guía para dejar la máquina virtual con Ubuntu Server lista para alojar los ser
 |---|---|
 | CPU | 4 vCPU |
 | RAM | 8 GB |
-| Disco | 60 a 80 GB |
-| Sistema | Ubuntu Server 24.04 LTS o 26.04 LTS, 64 bits |
-| Red | Adaptador en **modo puente (bridged)** |
+| Disco | 80 GB disponibles como mínimo para la asignación lógica inicial |
+| Sistema | Ubuntu Server 26.04 LTS, 64 bits |
+| Red | Adaptador en **modo puente (bridged)** e IP fija o reserva DHCP |
 
-Notas:
+La línea base de despliegue usa arquitectura **x86_64 (amd64)**. Docker Engine
+se instala desde el repositorio oficial de Docker y Compose mediante el plugin
+`docker-compose-plugin`; no se usa el script de conveniencia.
 
-- Docker Engine es compatible con Ubuntu 26.04, 25.10, 24.04 y 22.04 de 64 bits. Usa la versión que indique tu profesor.
-- El modo puente es indispensable: con NAT, la Raspberry Pi no puede alcanzar la VM desde la red local.
-- La VM necesita una IP fija para que la Raspberry Pi siempre sepa a dónde enviar las imágenes.
-- El disco depende sobre todo de las imágenes; unas 315 por semana ocupan poco espacio.
-
-### Lo que necesitas tener a la mano
-
-- El ISO de Ubuntu Server instalado y un usuario con permisos de `sudo`.
-- Tu computadora con cliente SSH.
-- La Raspberry Pi conectada a la misma red.
-- Los datos de tu red: IP libre para la VM, puerta de enlace (normalmente la IP del router) y DNS.
-
----
 
 ## 2. Qué se instala
 
@@ -44,10 +39,13 @@ En el sistema anfitrión (Ubuntu) solo va lo esencial:
 | `ufw` | Firewall |
 | `fail2ban` | Bloqueo de intentos repetidos de acceso |
 | `unattended-upgrades` | Actualizaciones de seguridad automáticas |
-| `git`, `curl`, `htop`, `net-tools`, `unzip` | Herramientas de trabajo y diagnóstico |
+| `git`, `curl`, `htop`, `net-tools`, `unzip`, `lsb-release` | Herramientas de trabajo y diagnóstico |
 | Docker Engine y plugin de Compose | Ejecutar los servicios en contenedores |
 
-Node.js, Python y MariaDB **no se instalan en el host**: corren dentro de contenedores, lo que mantiene el servidor limpio y reproducible.
+Node.js 26, Python 3.13 y MariaDB 11.8 **no se instalan en el host**: corren
+dentro de contenedores con etiquetas de versión exactas, lo que mantiene el
+servidor limpio y reproducible. Python 3.14 solo se considerará después de
+validar sus dependencias de inferencia.
 
 ---
 
@@ -59,8 +57,9 @@ Todos los comandos se ejecutan en la VM, salvo que se indique lo contrario.
 
 ```bash
 sudo apt update && sudo apt upgrade -y
-sudo apt install -y curl git ufw htop net-tools ca-certificates gnupg unzip fail2ban unattended-upgrades
-sudo hostnamectl set-hostname chromat-server
+sudo apt install -y curl git ufw htop net-tools ca-certificates gnupg unzip \
+  fail2ban unattended-upgrades lsb-release
+sudo hostnamectl set-hostname chromat.lan
 sudo timedatectl set-timezone America/Mazatlan
 ```
 
@@ -70,7 +69,7 @@ Activar las actualizaciones de seguridad automáticas (acepta la opción por def
 sudo dpkg-reconfigure -plow unattended-upgrades
 ```
 
-### 3.2 IP fija con Netplan
+### 3.2 Red, nombre y resolución local
 
 Identifica el nombre de la interfaz de red (por ejemplo `enp0s3`) y el archivo de configuración:
 
@@ -107,6 +106,25 @@ Aplica la configuración con `try`, que revierte los cambios si pierdes la conex
 sudo netplan try
 ```
 
+Registra el nombre operativo en el servidor y en cada cliente que no use el
+DNS del router. Sustituye `192.168.1.50` por la IP fija real:
+
+```text
+192.168.1.50 chromat.lan
+```
+
+En el servidor:
+
+```bash
+printf '192.168.1.50 chromat.lan\n' | sudo tee -a /etc/hosts
+getent hosts chromat.lan
+```
+
+El certificado de producción debe cubrir `chromat.lan`; las IP usadas para
+probar HTTPS también deben estar incluidas en sus SAN. La emisión y
+provisionamiento de TLS pertenecen al runbook de promoción, no a la instalación
+del sistema operativo.
+
 ### 3.3 SSH con llave
 
 En la VM:
@@ -133,17 +151,24 @@ sudo systemctl restart ssh
 
 > No cierres tu sesión actual hasta comprobar en otra terminal que sigues pudiendo entrar con la llave.
 
-### 3.4 Firewall
+### 3.4 Firewall y superficie de red
+
+La superficie de aplicación es únicamente TCP/443. SSH es una excepción de
+administración y debe limitarse a la red o IP de administración conocida.
+No se abre TCP/80: no hay redirección HTTP en esta fase.
 
 ```bash
 sudo ufw default deny incoming
 sudo ufw default allow outgoing
-sudo ufw allow OpenSSH
-sudo ufw allow 80/tcp
-sudo ufw allow 443/tcp
+sudo ufw allow from 192.168.1.0/24 to any port 22 proto tcp comment 'SSH administracion'
+sudo ufw allow 443/tcp comment 'CHROMAT HTTPS'
 sudo ufw enable
 sudo ufw status verbose
 ```
+
+Si la administración llega desde otra red, cambia `192.168.1.0/24` antes de
+activar UFW. La salida HTTPS del `telegram-worker` se valida por separado en
+la promoción; no se abre ningún puerto entrante para Telegram.
 
 ### 3.5 Docker Engine y Compose (repositorio oficial)
 
@@ -189,29 +214,100 @@ docker run hello-world
 docker compose version
 ```
 
-### 3.6 Estructura de carpetas del proyecto
+### 3.6 Almacenamiento y permisos
+
+La asignación puede residir inicialmente en un único disco, pero las áreas se
+mantienen separadas lógicamente para poder medirlas y migrarlas después:
+
+| Área | Mínimo inicial | Uso |
+|---|---:|---|
+| Crudos | 20 GiB | Imágenes recibidas y retención operativa |
+| Derivados | 10 GiB | Resultados derivados y exportaciones |
+| MariaDB | 20 GiB | Volumen persistente de la base |
+| Backups | 20 GiB | Retención local y copia de la promoción |
+| Reserva operativa | 10 GiB | Imágenes, logs, actualizaciones y margen |
+
+La topología actual usa el volumen Docker `chromat_raw_data` para crudos y
+`chromat_db_data` para MariaDB y los metadatos derivados; `derived` queda como
+reserva lógica para exportaciones o una futura separación. Por eso se
+contabilizan tanto los volúmenes Docker como las áreas del host.
+
+Valida que las áreas estén en el filesystem esperado y que haya al menos
+80 GiB disponibles antes de cargar una release:
 
 ```bash
-mkdir -p ~/chromat-cloud/{docs/diagramas,nginx/conf.d,api/src/{config,routes,controllers,services,middlewares,db},api/tests,inference/{app,models},db/init,web/public,edge/systemd,scripts,uploads,backups}
-cd ~/chromat-cloud
-git init
+sudo install -d -m 0750 -o "$USER" -g "$USER" \
+  /srv/chromat/{releases,backups,raw,derived,mariadb,logs,secrets,tls}
+df -h /srv/chromat /var/lib/docker
+findmnt -T /srv/chromat
+test "$(df --output=avail -k /srv/chromat | tail -n 1)" -ge 83886080
+docker system df
 ```
 
-Crear el `.gitignore` para no subir secretos, imágenes ni respaldos:
+El volumen de MariaDB y el volumen de crudos de Compose deben medirse después
+de la primera puesta en marcha:
 
 ```bash
-cat > .gitignore <<'EOF'
-.env
-node_modules/
-uploads/
-backups/
-inference/models/
-__pycache__/
-*.log
+docker volume inspect chromat_db_data chromat_raw_data
+sudo du -sh /srv/chromat/{releases,backups,raw,derived,mariadb,logs}
+```
+
+Protege las áreas que contendrán secretos o backups. Los valores reales se
+provisionan fuera de Git y fuera del paquete de artefactos:
+
+```bash
+sudo chown -R root:root /srv/chromat/{secrets,tls}
+sudo chmod 0700 /srv/chromat/{secrets,tls}
+sudo chmod 0700 /srv/chromat/backups
+```
+
+### 3.7 Directorios de releases, no código fuente
+
+La promoción coloca el paquete verificado en una release versionada. No se
+clona el repositorio ni se monta el árbol de desarrollo en producción:
+
+```bash
+sudo install -d -m 0755 /srv/chromat/releases
+sudo ln -sfn /srv/chromat/releases/VERSION /srv/chromat/active
+sudo chown -R "$USER":"$USER" /srv/chromat/releases
+```
+
+La instalación de imágenes, `production.env`, certificados y tokens sigue el
+procedimiento de `docs/deployment/artifacts.md`. La clave privada de la CA
+nunca se copia al servidor.
+
+### 3.8 Arranque controlado
+
+Docker debe arrancar con el sistema y Compose debe iniciar únicamente la
+release activa, sin construir ni descargar imágenes:
+
+```bash
+sudo systemctl enable --now docker
+sudo tee /etc/systemd/system/chromat-compose.service >/dev/null <<'EOF'
+[Unit]
+Description=CHROMAT Server Compose release
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/chromat/active
+ExecStart=/usr/bin/docker compose --env-file production.env up -d --no-build
+ExecStop=/usr/bin/docker compose --env-file production.env down
+RemainAfterExit=yes
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
 EOF
+sudo systemctl daemon-reload
+sudo systemctl enable chromat-compose.service
 ```
 
-Copia `README.md` a `~/chromat-cloud/` y esta guía a `~/chromat-cloud/docs/`.
+Activa el servicio solo después de que la release y sus secretos hayan sido
+verificados. La apertura de tráfico, migraciones, readiness y smoke tests son
+pasos posteriores de la promoción.
 
 ---
 
@@ -219,11 +315,15 @@ Copia `README.md` a `~/chromat-cloud/` y esta guía a `~/chromat-cloud/docs/`.
 
 ```bash
 lsb_release -a            # versión de Ubuntu
+dpkg --print-architecture # debe mostrar amd64
+hostname --fqdn           # debe resolver chromat.lan
 ip -4 a                   # IP fija
-sudo ufw status           # firewall activo
+sudo ufw status verbose   # firewall activo, SSH restringido y solo 443 público
 docker ps                 # Docker responde
 docker compose version    # Compose instalado
-free -h && df -h          # memoria y disco
+free -h                   # debe mostrar al menos 8 GiB
+df -h /srv/chromat /var/lib/docker
+ss -lntup                 # solo 443 público; no 80, 3000, 3306 ni 8000
 ```
 
 Desde la Raspberry Pi:
@@ -234,20 +334,27 @@ ping 192.168.1.50
 
 ### Lista de comprobación
 
-- [ ] La VM tiene el adaptador de red en modo puente.
+- [ ] El sistema es Ubuntu 26.04 LTS amd64 con 4 vCPU y al menos 8 GiB RAM.
 - [ ] La IP fija responde después de reiniciar (`sudo reboot`).
-- [ ] Puedo entrar por SSH con llave desde mi computadora.
-- [ ] `ufw` está activo y solo permite SSH, 80 y 443.
+- [ ] `chromat.lan` resuelve a la IP operativa desde el servidor y los clientes.
+- [ ] El espacio mínimo de crudos, derivados, MariaDB, backups y reserva está documentado y disponible.
+- [ ] Puedo entrar por SSH con llave desde la red de administración.
+- [ ] `ufw` está activo, no permite TCP/80 y solo publica TCP/443 para la aplicación.
 - [ ] `docker run hello-world` funciona sin `sudo`.
-- [ ] `docker compose version` muestra la versión.
-- [ ] La Raspberry Pi hace `ping` a la VM.
-- [ ] La estructura de carpetas existe en `chromat-cloud`.
+- [ ] `docker compose version` muestra la versión instalada desde el repositorio oficial.
+- [ ] Docker está habilitado al arranque y `chromat-compose.service` queda preparado.
+- [ ] No hay listeners públicos para API, MariaDB, inferencia ni workers.
 
 ---
 
 ## 5. Seguridad: Docker y el firewall
 
-Docker publica los puertos saltándose las reglas de `ufw`. Por eso, en el `docker-compose.yml` (etapa 2) **solo Nginx tendrá la sección `ports`**. La API, la inferencia y MariaDB se comunicarán por la red interna de Compose y nunca quedarán expuestas.
+Docker puede publicar puertos saltándose reglas de `ufw`. Por eso, en
+`compose.yaml` **solo Nginx tiene la sección `ports`**, limitada a
+`443:443`. La API, la inferencia, MariaDB y los workers se comunican por las
+redes internas de Compose y nunca deben recibir una publicación del host.
+Verifica esta condición con `docker compose config` y `ss -lntup` antes de
+activar el tráfico.
 
 ---
 
@@ -271,7 +378,7 @@ Guarda capturas de pantalla de lo siguiente; sirven para el Capítulo IV:
 - Configuración de red del hipervisor (modo puente).
 - Salida de `sudo ufw status verbose`.
 - Salida de `docker run hello-world` y `docker compose version`.
-- El árbol de carpetas: `tree ~/chromat-cloud` (instala con `sudo apt install tree`).
+- El árbol de releases: `tree /srv/chromat` (instala con `sudo apt install tree`).
 
 ---
 
