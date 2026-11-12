@@ -7,7 +7,9 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
 COPY src ./src
+COPY docker-entrypoint.sh /usr/local/bin/chromat-entrypoint
+RUN chmod 755 /usr/local/bin/chromat-entrypoint
 
-USER node
 EXPOSE 3000
+ENTRYPOINT ["chromat-entrypoint"]
 CMD ["node", "src/server.js"]

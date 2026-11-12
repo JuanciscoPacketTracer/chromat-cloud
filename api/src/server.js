@@ -1322,6 +1322,16 @@ async function finalizeRawFile(sourceId, eventId, relativePath, stagingRelativeP
   }
 }
 
+async function moveUploadToStaging(temporaryPath, stagingPath) {
+  try {
+    await fsp.rename(temporaryPath, stagingPath);
+  } catch (error) {
+    if (error.code !== "EXDEV") throw error;
+    await fsp.copyFile(temporaryPath, stagingPath, fs.constants.COPYFILE_EXCL);
+    await fsp.rm(temporaryPath, { force: true });
+  }
+}
+
 async function ingestEvent(request, response, sourceId) {
   let upload;
   try {
@@ -1409,7 +1419,7 @@ async function ingestEvent(request, response, sourceId) {
         return;
       }
 
-      await fsp.rename(upload.temporaryPath, stagingPath);
+      await moveUploadToStaging(upload.temporaryPath, stagingPath);
       const receivedMysql = toMysqlTimestamp(receivedAt);
       await connection.query(
         `INSERT INTO monitoring_events

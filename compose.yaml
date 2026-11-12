@@ -29,7 +29,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "mariadb -h 127.0.0.1 -u root -p\"$$(cat /run/secrets/db_root_password)\" -e \"SELECT 1 FROM schema_migrations WHERE version = '001_initial' LIMIT 1\" --skip-column-names | grep -q 1"
+          "mariadb -h 127.0.0.1 -u root -p\"$$(cat /run/secrets/db_root_password)\" \"$${MARIADB_DATABASE}\" -e \"SELECT 1 FROM schema_migrations WHERE version = '001_initial' LIMIT 1\" --skip-column-names | grep -q 1"
         ]
       interval: 5s
       timeout: 5s
