@@ -21,7 +21,6 @@ export function applyObservation(state = {}, observation, config = {}) {
     !isValidDate(observation.occurredAt) ||
     observation.clockSuspect === true ||
     observation.reprocessing === true ||
-    observation.isTest === true ||
     observation.official === false ||
     typeof observation.classification !== "string" ||
     typeof observation.confidence !== "number" ||
