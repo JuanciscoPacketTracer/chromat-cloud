@@ -6,6 +6,24 @@ work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
 
 runbook="$repo_root/docs/deployment/backups.md"
+canonical_secret_dir="/etc/chromat/secrets"
+expected_backup_secrets=(
+  db_password
+  db_root_password
+  telegram_bot_token
+)
+
+expected_backup_secret_files=""
+for secret in "${expected_backup_secrets[@]}"; do
+  expected_backup_secret_files+="${expected_backup_secret_files:+ }$canonical_secret_dir/$secret"
+done
+grep -Fx "BACKUP_SECRET_FILES=$expected_backup_secret_files" "$repo_root/.env.example"
+for secret in "${expected_backup_secrets[@]}"; do
+  grep -Fq "$canonical_secret_dir/$secret" "$runbook"
+done
+grep -Fq '${TELEGRAM_BOT_TOKEN_HOST_FILE}:/run/secrets/telegram_bot_token:ro' \
+  "$repo_root/compose.yaml"
+
 for required_phrase in \
   "diari" \
   "siete" \

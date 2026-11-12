@@ -20,3 +20,4 @@ inference/models/*
 !inference/models/.gitkeep
 
 .DS_Store
+/secrets/
