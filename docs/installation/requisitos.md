@@ -40,7 +40,8 @@ directorio local de backups.
 No se deben copiar a Git ni al paquete de artefactos:
 
 - `db_password` y `db_root_password`;
-- `telegram_bot_token`, si se habilitan alertas de Telegram;
+- `telegram_bot_token`; la configuración actual siempre inicia
+  `telegram-worker`, que rechaza un token vacío;
 - contraseña inicial del operador;
 - `server.crt`, `server.key` y `ca.crt`;
 - destinatario público e identidad privada de `age` para backups.

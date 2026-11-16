@@ -105,8 +105,10 @@ cp -R -- docs/deployment "$package_dir/docs/"
     -e 's#^MODEL_HOST_PATH=.*#MODEL_HOST_PATH=./model/deterministic-model.json#' \
     -e 's#^TLS_CERT_HOST_PATH=.*#TLS_CERT_HOST_PATH=/srv/chromat/tls/server.crt#' \
     -e 's#^TLS_KEY_HOST_PATH=.*#TLS_KEY_HOST_PATH=/srv/chromat/tls/server.key#' \
+    -e 's#^DB_PASSWORD_HOST_FILE=.*#DB_PASSWORD_HOST_FILE=/etc/chromat/secrets/db_password#' \
+    -e 's#^DB_ROOT_PASSWORD_HOST_FILE=.*#DB_ROOT_PASSWORD_HOST_FILE=/etc/chromat/secrets/db_root_password#' \
+    -e 's#^TELEGRAM_BOT_TOKEN_HOST_FILE=.*#TELEGRAM_BOT_TOKEN_HOST_FILE=/etc/chromat/secrets/telegram_bot_token#' \
     .env.example
-  printf 'TELEGRAM_BOT_TOKEN_HOST_FILE=/etc/chromat/secrets/telegram_bot_token\n'
 } >"$package_dir/production.env.example"
 
 mkdir -p "$package_dir/.metadata"
@@ -217,6 +219,7 @@ PY
 rm -rf "$package_dir/.metadata"
 (cd "$package_dir" && find . -type f ! -name checksums.sha256 -print0 | sort -z | xargs -0 sha256sum > checksums.sha256)
 chmod -R u=rwX,go=rX "$package_dir"
+chmod 0644 "$package_dir/scripts/lib/backup-config.sh"
 chmod 444 "$package_dir/manifest.json" "$package_dir/checksums.sha256"
 
 tar -C "$release_root" -czf "$release_root/chromat-${version}.tar.gz" "$version"

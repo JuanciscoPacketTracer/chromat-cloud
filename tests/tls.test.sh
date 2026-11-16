@@ -51,6 +51,12 @@ server_inode="$(stat -c '%i' "$installed_dir/server.crt")"
 bash "$repo_root/scripts/install-production-tls.sh" \
   "$source_dir" "$installed_dir" 192.0.2.10 >/dev/null
 test "$(stat -c '%i' "$installed_dir/server.crt")" = "$server_inode"
+printf 'replacement\n' >>"$source_dir/server.crt"
+if bash "$repo_root/scripts/install-production-tls.sh" \
+  "$source_dir" "$installed_dir" 192.0.2.10 >/dev/null 2>&1; then
+  printf 'FAIL: TLS replacement without explicit authorization was accepted\n' >&2
+  exit 1
+fi
 
 if bash "$repo_root/scripts/check-tls-expiry.sh" "$installed_dir/server.crt" 30; then
   :
@@ -66,6 +72,26 @@ fi
 if bash "$repo_root/scripts/install-production-tls.sh" \
   "$source_dir" "$work_dir/invalid-san" 192.0.2.11; then
   printf 'FAIL: certificate with missing expected IP SAN was accepted\n' >&2
+  exit 1
+fi
+
+no_eku_dir="$work_dir/no-server-auth"
+mkdir -p "$no_eku_dir"
+cp "$source_dir/ca.crt" "$no_eku_dir/ca.crt"
+cp "$source_dir/server.key" "$no_eku_dir/server.key"
+cat >"$work_dir/no-server-auth.ext" <<'EOF'
+subjectAltName=DNS:chromat.lan,IP:192.0.2.10
+EOF
+openssl x509 -req -sha256 -days 365 \
+  -in "$work_dir/server.csr" \
+  -CA "$no_eku_dir/ca.crt" \
+  -CAkey "$work_dir/ca.key" \
+  -CAcreateserial -CAserial "$work_dir/no-server-auth.srl" \
+  -out "$no_eku_dir/server.crt" \
+  -extfile "$work_dir/no-server-auth.ext" >/dev/null 2>&1
+if bash "$repo_root/scripts/install-production-tls.sh" \
+  "$no_eku_dir" "$work_dir/invalid-eku" 192.0.2.10; then
+  printf 'FAIL: certificate without serverAuth was accepted\n' >&2
   exit 1
 fi
 

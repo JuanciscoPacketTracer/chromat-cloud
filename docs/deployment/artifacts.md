@@ -1,79 +1,67 @@
-# Artefactos de promoción Fedora → Ubuntu
+# Artefactos de promoción Fedora a Ubuntu
 
-Este procedimiento produce un paquete autosuficiente para `linux/amd64`.
-Fedora construye y verifica las imágenes; Ubuntu solo carga los tarballs y
-ejecuta Compose con `PULL_POLICY=never`.
+Fedora construye y verifica el paquete `linux/amd64`; Ubuntu 26.04 solamente
+carga sus imágenes y ejecuta Compose con `PULL_POLICY=never`. Los enlaces
+`dist/artifacts/active` y `previous` son locales a Fedora: **nunca** se copian
+ni se usan como los enlaces operativos de Ubuntu.
 
-## Construir el paquete
+## Transferir y comprobar una release
 
-Requiere Docker Engine con el daemon disponible, Docker Compose, Git, Python 3
-y `sha256sum`:
-
-```bash
-scripts/package-artifacts.sh 2026.11.09-1
-```
-
-El resultado queda en `dist/artifacts/2026.11.09-1/` y contiene:
-
-- `images/*.tar`: imágenes propias y de terceros exportadas con `docker save`.
-- `model/deterministic-model.json`: modelo separado.
-- `db/*.sql`: migraciones.
-- `scripts/`, `tests/smoke/` y `docs/deployment/`: runtime operativo,
-  verificaciones y runbooks necesarios para promover fuera de Git.
-- `compose.yaml`, `nginx/`, `web/` y `.env.example`: runtime no secreto.
-- `production.env.example`: nombres versionados, `PULL_POLICY=never` y
-  placeholders que deben completarse con secretos provisionados fuera del
-  paquete.
-- `manifest.json`: commit, plataforma, digests, checksums, modelo, migración,
-  configuración, Ubuntu objetivo, versiones de Docker/Compose, fecha y
-  operador.
-- `checksums.sha256`: huellas del contenido del paquete.
-
-El script conserva `active` y `previous` como enlaces simbólicos dentro de
-`dist/artifacts/`. La promoción activa anterior se convierte en `previous`
-antes de activar la nueva versión.
-También genera `chromat-<version>.tar.gz.sha256` para verificar el archivo
-comprimido durante el transporte.
-
-## Verificar fuera de Git
-
-La verificación no necesita consultar el repositorio:
+En el equipo que construyó la release, transfiere ambos archivos mediante SSH
+autenticado (clave de operador y validación de la clave de host):
 
 ```bash
-scripts/verify-artifacts.sh dist/artifacts/2026.11.09-1
+VERSION=2026.11.12-1
+scp -- "/ruta/dist/artifacts/chromat-${VERSION}.tar.gz" \
+  "/ruta/dist/artifacts/chromat-${VERSION}.tar.gz.sha256" \
+  operator@chromat.lan:/tmp/
 ```
 
-Comprueba los campos obligatorios del manifiesto, la plataforma amd64,
-`PULL_POLICY=never`, la existencia del modelo y de cada tarball, los checksums y
-la ausencia de archivos con nombres de secretos. Un fallo debe abortar la
-promoción.
+En Ubuntu, como administrador, comprueba el checksum **antes** de extraer. No
+aceptes un tarball sin su checksum ni sustituyas esos archivos por una descarga
+sin autenticar.
 
-## Instalar en Ubuntu
+```bash
+VERSION=2026.11.12-1
+sudo install -d -o root -g root -m 0755 /srv/chromat/releases
+sudo test ! -e "/srv/chromat/releases/${VERSION}"
+cd /tmp
+sha256sum --check "chromat-${VERSION}.tar.gz.sha256"
+sudo tar -xzf "chromat-${VERSION}.tar.gz" -C /srv/chromat/releases
+sudo test -d "/srv/chromat/releases/${VERSION}"
+sudo "/srv/chromat/releases/${VERSION}/scripts/verify-artifacts.sh" \
+  "/srv/chromat/releases/${VERSION}"
+```
 
-Transfiere el directorio o el tarball verificado junto con los materiales
-secretos provisionados fuera de Git. Copia `production.env.example` a
-`production.env` y completa sus credenciales en Ubuntu; el paquete nunca
-contiene contraseñas o tokens reales. En Ubuntu no se ejecutan `docker compose
-pull` ni `docker compose build`; se cargan las imágenes con `docker load` y se
-usa `production.env`. La clave privada de la CA nunca forma parte del paquete.
+`test ! -e` hace que una release existente aborte; no se sobreescribe una
+release verificada. El paquete contiene imágenes, migraciones, scripts,
+runbooks y sus checksums. No incluye secretos ni claves privadas de CA.
 
-El modelo se monta desde `model/deterministic-model.json` como archivo de solo
-lectura; no depende de una copia distinta embebida en la imagen.
-La instalación y renovación de `server.crt`, `server.key` y `ca.crt` están
-documentadas en [`tls.md`](tls.md).
-La política de backups, retención y restauración aislada está en
-[`backups.md`](backups.md).
-La secuencia completa de promoción, readiness, smoke y rollback está en
-[`promotion.md`](promotion.md).
+## Promoción operativa de Ubuntu
 
-## Rollback compatible
+La extracción y verificación no activan una release. No ejecute `ln`, `mv` ni
+ninguna otra operación sobre `/srv/chromat/active` o
+`/srv/chromat/previous` desde este runbook. La instalación inicial, la
+actualización y el rollback se ejecutan exclusivamente siguiendo
+[`promotion.md`](promotion.md). Ese procedimiento adquiere el lock de
+promoción, persiste `LINK_STATE`, realiza reemplazos atómicos, conserva el
+estado para recuperación y exige las confirmaciones externas `BLOCKED` y
+`OPENED` antes de finalizar.
 
-Conserva `active` y `previous` hasta confirmar la promoción. Para volver atrás,
-carga las imágenes de `previous`, usa su manifiesto y `production.env`, y
-arranca Compose solo si la migración declara compatibilidad con esa versión.
-No se ejecutan down-migrations. Si la base ya no es compatible, detén el
-tráfico y restaura el backup verificado asociado a la versión anterior.
+El recuperador `scripts/recover-release-links.sh` forma parte de ese flujo:
+desde el shell de promoción reutiliza el descriptor 9 heredado y desde un
+shell root nuevo adquiere el mismo lock. No sustituya ese procedimiento con
+un cambio manual de enlaces.
 
-El paquete no firma criptográficamente los checksums: el transporte y la
-autenticidad del paquete se protegen por el canal operativo elegido, conforme a
-ADR-0008.
+Todos los comandos operativos usan siempre el mismo proyecto y los nombres de
+volumen definidos en `compose.yaml`:
+
+```bash
+RELEASE_DIR=/srv/chromat/active
+sudo docker compose --project-name chromat --project-directory "$RELEASE_DIR" \
+  --env-file /etc/chromat/production.env -f "$RELEASE_DIR/compose.yaml" config
+```
+
+No se ejecutan `docker compose pull`, `docker compose build` ni `git pull` en
+Ubuntu. Véanse `promotion.md`, `tls.md` y `backups.md` para los flujos de
+instalación, actualización y recuperación.

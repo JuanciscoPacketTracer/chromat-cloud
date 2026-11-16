@@ -2,9 +2,14 @@
 set -euo pipefail
 
 usage() {
-  printf 'Usage: %s SOURCE_DIR DEST_DIR EXPECTED_IP [EXPECTED_IP...]\n' "$0" >&2
+  printf 'Usage: %s [--replace] SOURCE_DIR DEST_DIR EXPECTED_IP [EXPECTED_IP...]\n' "$0" >&2
 }
 
+replace=0
+if [[ "${1:-}" == "--replace" ]]; then
+  replace=1
+  shift
+fi
 if [[ $# -lt 3 ]]; then
   usage
   exit 2
@@ -62,6 +67,12 @@ for expected_ip in "$@"; do
   }
 done
 
+openssl x509 -in "$source_dir/server.crt" -noout -ext extendedKeyUsage |
+  grep -Eq 'TLS Web Server Authentication|serverAuth|1\.3\.6\.1\.5\.5\.7\.3\.1' || {
+  printf 'server.crt must include extended key usage serverAuth\n' >&2
+  exit 2
+}
+
 cert_public_key="$(
   openssl x509 -in "$source_dir/server.crt" -pubkey -noout |
     openssl pkey -pubin -outform DER |
@@ -78,14 +89,31 @@ key_public_key="$(
 
 umask 077
 mkdir -p -- "$destination_dir"
+existing_files=0
+different_files=0
+for file in "${required_files[@]}"; do
+  if [[ -e "$destination_dir/$file" ]]; then
+    ((existing_files += 1))
+    cmp --silent "$source_dir/$file" "$destination_dir/$file" || ((different_files += 1))
+  fi
+done
+if (( existing_files > 0 && existing_files < ${#required_files[@]} )); then
+  printf 'TLS destination contains only part of an existing configuration: %s\n' \
+    "$destination_dir" >&2
+  exit 2
+fi
+if (( different_files > 0 && ! replace )); then
+  printf 'TLS materials already exist and differ; rerun with --replace after authorization\n' >&2
+  exit 2
+fi
+
 for file in "${required_files[@]}"; do
   install_mode=0644
   [[ "$file" == server.key ]] && install_mode=0600
-  if [[ -f "$destination_dir/$file" ]]; then
-    cat "$source_dir/$file" >"$destination_dir/$file"
-    chmod "$install_mode" "$destination_dir/$file"
-  else
+  if [[ ! -e "$destination_dir/$file" || $replace -eq 1 ]]; then
     install -m "$install_mode" "$source_dir/$file" "$destination_dir/$file"
+  else
+    chmod "$install_mode" "$destination_dir/$file"
   fi
 done
 
