@@ -44,7 +44,8 @@ for required_phrase in \
 done
 
 fake_bin="$work_dir/bin"
-mkdir -p "$fake_bin"
+fake_container_bin="$work_dir/container-bin"
+mkdir -p "$fake_bin" "$fake_container_bin"
 cat >"$fake_bin/age" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -73,7 +74,46 @@ cp -- "$input" "$output"
 EOF
 cat >"$fake_bin/findmnt" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "${FAKE_MOUNT_TARGET:-/mnt/external}"
+set -euo pipefail
+
+output=
+path=
+while (($#)); do
+  case "$1" in
+    -T)
+      path="$2"
+      shift 2
+      ;;
+    -o)
+      output="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+if [[ "$path" == / ]]; then
+  source="${FAKE_ROOT_SOURCE:-/dev/root}"
+  device="${FAKE_ROOT_DEVICE:-8:1}"
+else
+  source="${FAKE_MOUNT_SOURCE:-/dev/external}"
+  device="${FAKE_MOUNT_DEVICE:-8:16}"
+fi
+
+case "$output" in
+  TARGET) printf '%s\n' "${FAKE_MOUNT_TARGET:-/mnt/external}" ;;
+  SOURCE)
+    [[ "${FAKE_FAIL_SOURCE:-0}" == 0 ]] || exit 1
+    printf '%s\n' "$source"
+    ;;
+  MAJ:MIN)
+    [[ "${FAKE_FAIL_MAJ_MIN:-0}" == 0 ]] || exit 1
+    printf '%s\n' "$device"
+    ;;
+  *) printf 'unexpected findmnt output field: %s\n' "$output" >&2; exit 64 ;;
+esac
 EOF
 cat >"$fake_bin/sudo" <<'EOF'
 #!/usr/bin/env bash
@@ -93,7 +133,9 @@ printf '%s\n' "$*" >>"$DOCKER_LOG"
 case "${1:-}" in
   compose)
     if [[ " $* " == *" exec -T db "* ]]; then
-      printf 'CREATE DATABASE chromat;\nUSE chromat;\n'
+      container_command="${!#}"
+      container_command="${container_command//\/run\/secrets\/db_root_password/$FAKE_DB_SECRET_FILE}"
+      PATH="$FAKE_CONTAINER_BIN:$PATH" sh -c "$container_command"
     fi
     ;;
   run)
@@ -124,14 +166,37 @@ case "${1:-}" in
     ;;
 esac
 EOF
-chmod +x "$fake_bin/age" "$fake_bin/findmnt" "$fake_bin/sudo" "$fake_bin/docker"
+cat >"$fake_container_bin/mariadb-dump" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s\0' "$@" >"$FAKE_CLIENT_ARGS"
+tr '\0' '\n' </proc/$$/environ >"$FAKE_CLIENT_ENV"
+[[ "${1:-}" == --defaults-extra-file=* ]] || {
+  printf 'FAIL: defaults file was not the first MariaDB option\n' >&2
+  exit 1
+}
+defaults_file="${1#--defaults-extra-file=}"
+[[ "$(stat -c '%a' "$defaults_file")" == 600 ]] || {
+  printf 'FAIL: defaults file permissions are not 0600\n' >&2
+  exit 1
+}
+grep -Fx 'password="pa$$ word\"slash\\"' "$defaults_file"
+printf '%s\n' "$defaults_file" >"$FAKE_DEFAULTS_PATH"
+if [[ "${FAKE_MARIADB_FAIL:-}" == 1 ]]; then
+  exit 51
+fi
+printf 'CREATE DATABASE chromat;\nUSE chromat;\n'
+EOF
+chmod +x "$fake_bin/age" "$fake_bin/findmnt" "$fake_bin/sudo" "$fake_bin/docker" \
+  "$fake_container_bin/mariadb-dump"
 
 mkdir -p "$work_dir/backups" "$work_dir/external" "$work_dir/state"
 printf 'recipient\n' >"$work_dir/recipient"
 printf 'identity\n' >"$work_dir/identity"
 printf 'private-ca\n' >"$work_dir/ca.key"
 printf 'db-password\n' >"$work_dir/db_password"
-printf 'db-root-password\n' >"$work_dir/db_root_password"
+printf 'pa$$ word"slash\\\n' >"$work_dir/db_root_password"
 printf 'telegram-token\n' >"$work_dir/telegram_bot_token"
 chmod 0600 \
   "$work_dir/identity" "$work_dir/ca.key" "$work_dir/db_password" \
@@ -152,6 +217,11 @@ TELEGRAM_BOT_TOKEN_HOST_FILE=$work_dir/telegram_bot_token
 EOF
 export SUDO_LOG="$work_dir/sudo.log"
 export DOCKER_LOG="$work_dir/docker.log"
+export FAKE_CONTAINER_BIN="$fake_container_bin"
+export FAKE_DB_SECRET_FILE="$work_dir/db_root_password"
+export FAKE_CLIENT_ARGS="$work_dir/mariadb-client.args"
+export FAKE_CLIENT_ENV="$work_dir/mariadb-client.env"
+export FAKE_DEFAULTS_PATH="$work_dir/mariadb-defaults.path"
 
 if PATH="$fake_bin:$PATH" \
   FAKE_MOUNT_TARGET="$work_dir/external" \
@@ -166,6 +236,54 @@ if PATH="$fake_bin:$PATH" \
   sudo -- bash "$repo_root/scripts/backup.sh" --config "$config_file" \
     >/dev/null 2>&1; then
   printf 'FAIL: backup accepted an unavailable external mount\n' >&2
+  exit 1
+fi
+
+if PATH="$fake_bin:$PATH" \
+  FAKE_MOUNT_TARGET="$work_dir/external" \
+  FAKE_MOUNT_SOURCE=/dev/root \
+  FAKE_MOUNT_DEVICE=8:1 \
+  sudo -- bash "$repo_root/scripts/backup.sh" --config "$config_file" \
+    >/dev/null 2>&1; then
+  printf 'FAIL: backup accepted an external bind mount backed by root\n' >&2
+  exit 1
+fi
+
+if PATH="$fake_bin:$PATH" \
+  FAKE_MOUNT_TARGET="$work_dir/external" \
+  FAKE_MOUNT_SOURCE=/dev/root \
+  FAKE_MOUNT_DEVICE=8:16 \
+  sudo -- bash "$repo_root/scripts/backup.sh" --config "$config_file" \
+    >/dev/null 2>&1; then
+  printf 'FAIL: backup accepted an external mount with root source only\n' >&2
+  exit 1
+fi
+
+if PATH="$fake_bin:$PATH" \
+  FAKE_MOUNT_TARGET="$work_dir/external" \
+  FAKE_MOUNT_SOURCE=/dev/external \
+  FAKE_MOUNT_DEVICE=8:1 \
+  sudo -- bash "$repo_root/scripts/backup.sh" --config "$config_file" \
+    >/dev/null 2>&1; then
+  printf 'FAIL: backup accepted an external mount with root device only\n' >&2
+  exit 1
+fi
+
+if PATH="$fake_bin:$PATH" \
+  FAKE_MOUNT_TARGET="$work_dir/external" \
+  FAKE_FAIL_SOURCE=1 \
+  sudo -- bash "$repo_root/scripts/backup.sh" --config "$config_file" \
+    >/dev/null 2>&1; then
+  printf 'FAIL: backup accepted an unavailable mount source\n' >&2
+  exit 1
+fi
+
+if PATH="$fake_bin:$PATH" \
+  FAKE_MOUNT_TARGET="$work_dir/external" \
+  FAKE_FAIL_MAJ_MIN=1 \
+  sudo -- bash "$repo_root/scripts/backup.sh" --config "$config_file" \
+    >/dev/null 2>&1; then
+  printf 'FAIL: backup accepted an unavailable mount device identifier\n' >&2
   exit 1
 fi
 
@@ -213,6 +331,32 @@ PATH="$fake_bin:$PATH" \
   sudo -- bash "$repo_root/scripts/backup.sh" --config "$config_file" >/dev/null
 grep -Fq 'docker compose' "$SUDO_LOG"
 grep -Fq 'docker run' "$SUDO_LOG"
+if grep -Fq 'pa$$ word"slash\' "$FAKE_CLIENT_ARGS" "$FAKE_CLIENT_ENV"; then
+  printf 'FAIL: MariaDB client received the password through argv or environment\n' >&2
+  exit 1
+fi
+defaults_file="$(cat "$FAKE_DEFAULTS_PATH")"
+if [[ -e "$defaults_file" ]]; then
+  printf 'FAIL: MariaDB defaults file was not removed after backup\n' >&2
+  exit 1
+fi
+if PATH="$fake_bin:$PATH" \
+  FAKE_MARIADB_FAIL=1 \
+  FAKE_MOUNT_TARGET="$work_dir/external" \
+  sudo -- bash "$repo_root/scripts/backup.sh" --config "$config_file" \
+    >/dev/null 2>&1; then
+  printf 'FAIL: backup accepted a failed MariaDB dump\n' >&2
+  exit 1
+fi
+failed_defaults_file="$(cat "$FAKE_DEFAULTS_PATH")"
+if [[ -e "$failed_defaults_file" ]]; then
+  printf 'FAIL: MariaDB defaults file was not removed after a client error\n' >&2
+  exit 1
+fi
+if find "$work_dir/backups" -name 'chromat-mariadb.*' -print -quit | grep -q .; then
+  printf 'FAIL: MariaDB defaults file was persisted in a backup directory\n' >&2
+  exit 1
+fi
 
 verify_backup="$work_dir/verify-backup"
 mkdir -p "$verify_backup"
@@ -259,6 +403,26 @@ if grep -Eq -- '-uroot[[:space:]]+-p[^[:space:]]+|MARIADB_ROOT_PASSWORD=' \
   printf 'FAIL: verifier passes a MariaDB password as a process argument\n' >&2
   exit 1
 fi
+if grep -Eq -- 'MYSQL_PWD=|-[pP]"?\$\(cat /run/secrets/db_root_password\)' \
+  "$repo_root/scripts/backup.sh"; then
+  printf 'FAIL: backup exposes the MariaDB password through argv or environment\n' >&2
+  exit 1
+fi
+grep -Fq 'mktemp /tmp/chromat-mariadb.XXXXXX' "$repo_root/scripts/backup.sh"
+grep -Fq 'chmod 0600 "$defaults_file"' "$repo_root/scripts/backup.sh"
+grep -Fq 'trap cleanup_defaults EXIT' "$repo_root/scripts/backup.sh"
+if grep -Fq 'trap cleanup_defaults EXIT HUP INT TERM' "$repo_root/scripts/backup.sh"; then
+  printf 'FAIL: backup cleanup trap must not consume termination signals\n' >&2
+  exit 1
+fi
+for signal_spec in \
+  "trap 'exit 129' HUP" \
+  "trap 'exit 130' INT" \
+  "trap 'exit 143' TERM"; do
+  grep -Fq "$signal_spec" "$repo_root/scripts/backup.sh"
+done
+grep -Fq 'mariadb-dump --defaults-extra-file="$defaults_file"' \
+  "$repo_root/scripts/backup.sh"
 if PATH="$fake_bin:$PATH" \
   FAKE_SQL_FAILURE=1 \
   sudo -- bash "$repo_root/scripts/verify-backup.sh" \

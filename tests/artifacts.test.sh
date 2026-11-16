@@ -7,57 +7,190 @@ tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 package_dir="$tmp_dir/package"
-mkdir -p \
-  "$package_dir/images" \
-  "$package_dir/model" \
-  "$package_dir/scripts" \
-  "$package_dir/tests/smoke" \
-  "$package_dir/docs/deployment"
-printf 'model\n' >"$package_dir/model/model.bin"
-printf 'image\n' >"$package_dir/images/api.tar"
-for path in \
+mkdir -p "$package_dir/images" "$package_dir/scripts/lib"
+required_files=(
+  .env.example
+  compose.yaml
+  model/deterministic-model.json
+  nginx/conf.d/default.conf
+  web/public/app.js
+  web/public/index.html
+  web/public/styles.css
+  db/001_initial.sql
+  db/002_processing.sql
+  db/003_processing_constraints.sql
+  db/004_admin_auth.sql
+  db/005_source_management.sql
+  db/006_source_access.sql
+  db/007_retention.sql
+  db/008_raw_tombstones.sql
+  db/009_aggregated_state.sql
+  db/010_aggregation_rule_audit.sql
+  db/011_aggregated_state_history.sql
+  db/012_alerts.sql
+  db/013_alert_interval.sql
+  db/014_manual_reprocessing.sql
+  db/015_raw_file_finalization.sql
+  db/016_job_event_uniqueness.sql
   scripts/backup.sh \
   scripts/check-tls-expiry.sh \
+  scripts/install-production-tls.sh \
   scripts/prepare-ubuntu-production-host.sh \
+  scripts/recover-release-links.sh \
+  scripts/retention.sh \
   scripts/verify-artifacts.sh \
   scripts/verify-production-environment.sh \
   scripts/verify-backup.sh \
+  tests/smoke/admin-auth.sh \
+  tests/smoke/aggregation.sh \
+  tests/smoke/capacity.sh \
+  tests/smoke/client-bootstrap.sh \
+  tests/smoke/client-cleanup.sh \
+  tests/smoke/client-entrypoint.sh \
+  tests/smoke/compose.isolated.yaml \
+  tests/smoke/compose.sh \
+  tests/smoke/curl.sh \
+  tests/smoke/Dockerfile \
+  tests/smoke/inference.sh \
+  tests/smoke/ingestion.sh \
+  tests/smoke/isolated.sh \
+  tests/smoke/isolated.test.sh \
+  tests/smoke/migrations.sh \
+  tests/smoke/processing.sh \
+  tests/smoke/runner.test.sh \
   tests/smoke/run.sh \
-  docs/deployment/promotion.md; do
+  tests/smoke/skeleton.sh \
+  tests/smoke/source-management.sh \
+  tests/smoke/telegram.sh \
+  tests/smoke/telegram-stub.conf \
+  docs/deployment/artifacts.md \
+  docs/deployment/backups.md \
+  docs/deployment/promotion.md \
+  docs/deployment/tls.md
+)
+for path in "${required_files[@]}"; do
+  mkdir -p "$(dirname "$package_dir/$path")"
   if [[ "$path" == "scripts/verify-artifacts.sh" ]]; then
     cp "$repo_root/scripts/verify-artifacts.sh" "$package_dir/$path"
   else
     printf 'operational file\n' >"$package_dir/$path"
   fi
-  [[ "$path" != scripts/* ]] || chmod +x "$package_dir/$path"
+  [[ "$path" != scripts/* ]] || chmod 0755 "$package_dir/$path"
 done
-(
-  cd "$package_dir"
-  find . -type f ! -name checksums.sha256 -print0 | sort -z | xargs -0 sha256sum > checksums.sha256
-)
-model_sha256="$(sha256sum "$package_dir/model/model.bin" | cut -d' ' -f1)"
+printf 'backup configuration library\n' >"$package_dir/scripts/lib/backup-config.sh"
+chmod 0644 "$package_dir/scripts/lib/backup-config.sh"
+for archive in api inference db nginx; do
+  printf '%s image\n' "$archive" >"$package_dir/images/$archive.tar"
+done
+test "$(stat -c %a "$package_dir/scripts/lib/backup-config.sh")" = 644
+grep -Fq 'chmod 0644 "$package_dir/scripts/lib/backup-config.sh"' \
+  "$repo_root/scripts/package-artifacts.sh"
+refresh_checksums() {
+  (
+    cd "$1"
+    find . -type f ! -name checksums.sha256 -print0 | sort -z | xargs -0 sha256sum > checksums.sha256
+  )
+}
+model_sha256="$(sha256sum "$package_dir/model/deterministic-model.json" | cut -d' ' -f1)"
 cat >"$package_dir/manifest.json" <<'EOF'
 {
   "package_version": "test-1",
   "target_platform": "linux/amd64",
   "target_ubuntu_version": "26.04",
   "pull_policy": "never",
+  "model_path": "model/deterministic-model.json",
   "model_sha256": "__MODEL_SHA256__",
   "images": [
-    {"name": "chromat-api:test-1", "archive": "images/api.tar"}
+    {"name": "chromat-api:test-1", "archive": "images/api.tar"},
+    {"name": "chromat-inference:test-1", "archive": "images/inference.tar"},
+    {"name": "mariadb:test-1", "archive": "images/db.tar"},
+    {"name": "nginx:test-1", "archive": "images/nginx.tar"}
   ]
 }
 EOF
 sed -i "s/__MODEL_SHA256__/$model_sha256/" "$package_dir/manifest.json"
 printf 'PULL_POLICY=never\n' >"$package_dir/production.env.example"
+refresh_checksums "$package_dir"
 
 "$verifier" "$package_dir"
+assert_invalid_manifest() {
+  local case_name="$1"
+  local invalid_package="$tmp_dir/invalid-manifest-$case_name"
+
+  cp -a "$package_dir" "$invalid_package"
+  if [[ "$case_name" == "invalid-json" ]]; then
+    printf '{\n' >"$invalid_package/manifest.json"
+  else
+  python3 - "$invalid_package/manifest.json" "$case_name" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+case = sys.argv[2]
+manifest = json.loads(path.read_text(encoding="utf-8"))
+if case == "root-list":
+    manifest = []
+elif case == "images-not-list":
+    manifest["images"] = {}
+elif case == "three-images":
+    manifest["images"].pop()
+elif case == "image-not-object":
+    manifest["images"][0] = "images/api.tar"
+elif case == "duplicate-archive":
+    manifest["images"][3]["archive"] = "images/api.tar"
+elif case == "non-string-archive":
+    manifest["images"][0]["archive"] = []
+elif case == "invalid-model-hash":
+    manifest["model_sha256"] = "z" * 64
+elif case == "mismatched-model-hash":
+    manifest["model_sha256"] = "0" * 64
+elif case == "non-string-model-path":
+    manifest["model_path"] = 1
+else:
+    raise SystemExit(f"unknown manifest test case: {case}")
+path.write_text(json.dumps(manifest), encoding="utf-8")
+PY
+  fi
+  refresh_checksums "$invalid_package"
+  if "$verifier" "$invalid_package" >/dev/null 2>&1; then
+    printf 'expected invalid manifest to fail: %s\n' "$case_name" >&2
+    exit 1
+  fi
+}
+for case_name in \
+  invalid-json \
+  root-list \
+  images-not-list \
+  three-images \
+  image-not-object \
+  duplicate-archive \
+  non-string-archive \
+  invalid-model-hash \
+  mismatched-model-hash \
+  non-string-model-path; do
+  assert_invalid_manifest "$case_name"
+done
+for critical_path in \
+  compose.yaml \
+  nginx/conf.d/default.conf \
+  db/016_job_event_uniqueness.sql \
+  scripts/lib/backup-config.sh \
+  model/deterministic-model.json \
+  tests/smoke/run.sh \
+  docs/deployment/promotion.md; do
+  incomplete_package="$tmp_dir/incomplete-$(basename "$critical_path")"
+  cp -a "$package_dir" "$incomplete_package"
+  rm "$incomplete_package/$critical_path"
+  refresh_checksums "$incomplete_package"
+  if "$verifier" "$incomplete_package" >/dev/null 2>&1; then
+    printf 'expected incomplete package to fail: %s\n' "$critical_path" >&2
+    exit 1
+  fi
+done
 
 printf 'PULL_POLICY=missing\n' >"$package_dir/invalid-production.env"
-(
-  cd "$package_dir"
-  find . -type f ! -name checksums.sha256 -print0 | sort -z | xargs -0 sha256sum > checksums.sha256
-)
+refresh_checksums "$package_dir"
 if bash "$repo_root/scripts/verify-production-environment.sh" \
   "$package_dir" "$package_dir/invalid-production.env" >/dev/null 2>&1; then
   printf 'expected invalid production environment to fail\n' >&2
@@ -149,7 +282,40 @@ esac
 EOF
 cat >"$tmp_dir/bin/findmnt" <<'EOF'
 #!/usr/bin/env bash
-printf '/mnt/chromat-backups\n'
+set -euo pipefail
+
+output=
+path=
+while (($#)); do
+  case "$1" in
+    -T)
+      path="$2"
+      shift 2
+      ;;
+    -o)
+      output="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+if [[ "$path" == / ]]; then
+  source=/dev/root
+  device=8:1
+else
+  source=/dev/chromat-backups
+  device=8:16
+fi
+
+case "$output" in
+  TARGET) printf '/mnt/chromat-backups\n' ;;
+  SOURCE) printf '%s\n' "$source" ;;
+  MAJ:MIN) printf '%s\n' "$device" ;;
+  *) exit 64 ;;
+esac
 EOF
 chmod +x "$tmp_dir/bin/age" "$tmp_dir/bin/docker" "$tmp_dir/bin/findmnt"
 (
@@ -293,5 +459,22 @@ if "$verifier" "$package_dir" >/dev/null 2>&1; then
   printf 'expected checksum verification to fail\n' >&2
   exit 1
 fi
+
+artifacts_runbook="$repo_root/docs/deployment/artifacts.md"
+ubuntu_runbook="$repo_root/docs/installation/ubuntu-server-26.04.md"
+for runbook in "$artifacts_runbook" "$ubuntu_runbook"; do
+  grep -Fq 'promotion.md' "$runbook"
+  if grep -Eq '^[[:space:]]*(sudo )?(ln|mv)[[:space:]]' "$runbook"; then
+    printf 'activation runbook must not contain direct link replacement commands: %s\n' \
+      "$runbook" >&2
+    exit 1
+  fi
+done
+grep -Fq 'LINK_STATE' "$artifacts_runbook"
+grep -Fq 'BLOCKED' "$artifacts_runbook"
+grep -Fq 'OPENED' "$artifacts_runbook"
+grep -Fq 'LINK_STATE' "$ubuntu_runbook"
+grep -Fq 'BLOCKED' "$ubuntu_runbook"
+grep -Fq 'OPENED' "$ubuntu_runbook"
 
 printf 'PASS: artifact package verification contract\n'

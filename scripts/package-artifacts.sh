@@ -219,6 +219,7 @@ PY
 rm -rf "$package_dir/.metadata"
 (cd "$package_dir" && find . -type f ! -name checksums.sha256 -print0 | sort -z | xargs -0 sha256sum > checksums.sha256)
 chmod -R u=rwX,go=rX "$package_dir"
+chmod 0644 "$package_dir/scripts/lib/backup-config.sh"
 chmod 444 "$package_dir/manifest.json" "$package_dir/checksums.sha256"
 
 tar -C "$release_root" -czf "$release_root/chromat-${version}.tar.gz" "$version"

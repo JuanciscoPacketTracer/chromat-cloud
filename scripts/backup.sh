@@ -86,15 +86,7 @@ command -v age >/dev/null || {
   printf 'age is required for encrypted backups\n' >&2
   exit 2
 }
-command -v findmnt >/dev/null || {
-  printf 'findmnt is required to validate the external backup mount\n' >&2
-  exit 2
-}
-mount_target="$(findmnt -T "${EXTERNAL_DIR}" -n -o TARGET || true)"
-if [[ -z "${mount_target}" || "${mount_target}" == "/" ]]; then
-  printf 'BACKUP_EXTERNAL_DIR must be on a non-root mounted filesystem\n' >&2
-  exit 2
-fi
+require_independent_external_mount "${EXTERNAL_DIR}"
 case "${EXTERNAL_DIR}/" in
   "${BACKUP_ROOT}/"*)
     printf 'BACKUP_EXTERNAL_DIR must not be inside BACKUP_ROOT\n' >&2
@@ -155,8 +147,30 @@ MAINTENANCE_ACTIVE=1
 docker_compose stop worker >/dev/null
 WORKER_STOPPED=1
 
-docker_compose exec -T db sh -c \
-  'mariadb-dump --single-transaction --routines --triggers -u root -p"$(cat /run/secrets/db_root_password)" "$MARIADB_DATABASE"' \
+docker_compose exec -T db sh -ceu "$(cat <<'EOF'
+  defaults_file="$(mktemp /tmp/chromat-mariadb.XXXXXX)"
+  cleanup_defaults() {
+    rm -f -- "$defaults_file"
+  }
+  trap cleanup_defaults EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  password="$(cat /run/secrets/db_root_password)"
+  case "$password" in
+    *"
+"*)
+      printf "MariaDB passwords containing newlines are not supported\n" >&2
+      exit 2
+      ;;
+  esac
+  escaped_password="$(printf "%s" "$password" | sed "s/[\"\\\\]/\\\\&/g")"
+  printf "[client]\npassword=\"%s\"\n" "$escaped_password" >"$defaults_file"
+  chmod 0600 "$defaults_file"
+  unset MYSQL_PWD
+  mariadb-dump --defaults-extra-file="$defaults_file" --single-transaction --routines --triggers -u root "$MARIADB_DATABASE"
+EOF
+)" \
   >"${WORK_DIR}/database.sql"
 check_deadline
 

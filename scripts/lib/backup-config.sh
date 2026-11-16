@@ -106,3 +106,46 @@ require_secure_directory() {
     return 2
   }
 }
+
+require_independent_external_mount() {
+  local path="$1"
+  local mount_target mount_source mount_device root_source root_device
+
+  command -v findmnt >/dev/null || {
+    printf 'findmnt is required to validate the external backup mount\n' >&2
+    return 2
+  }
+  mount_target="$(findmnt -T "${path}" -n -o TARGET)" || {
+    printf 'BACKUP_EXTERNAL_DIR is not mounted: %s\n' "${path}" >&2
+    return 2
+  }
+  mount_source="$(findmnt -T "${path}" -n -o SOURCE)" || {
+    printf 'BACKUP_EXTERNAL_DIR mount source cannot be determined: %s\n' "${path}" >&2
+    return 2
+  }
+  mount_device="$(findmnt -T "${path}" -n -o MAJ:MIN)" || {
+    printf 'BACKUP_EXTERNAL_DIR device identifier cannot be determined: %s\n' "${path}" >&2
+    return 2
+  }
+  root_source="$(findmnt -T / -n -o SOURCE)" || {
+    printf 'root filesystem source cannot be determined\n' >&2
+    return 2
+  }
+  root_device="$(findmnt -T / -n -o MAJ:MIN)" || {
+    printf 'root filesystem device identifier cannot be determined\n' >&2
+    return 2
+  }
+
+  [[ "${mount_target}" != "/" ]] || {
+    printf 'BACKUP_EXTERNAL_DIR must be on a non-root mounted filesystem\n' >&2
+    return 2
+  }
+  [[ -n "${mount_source}" && "${mount_source}" != "${root_source}" ]] || {
+    printf 'BACKUP_EXTERNAL_DIR must have a mount source independent from root\n' >&2
+    return 2
+  }
+  [[ -n "${mount_device}" && "${mount_device}" != "${root_device}" ]] || {
+    printf 'BACKUP_EXTERNAL_DIR must have a device identifier independent from root\n' >&2
+    return 2
+  }
+}

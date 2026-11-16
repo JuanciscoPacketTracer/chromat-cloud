@@ -165,30 +165,18 @@ socket. `--project-directory` y `-f` hacen que Compose
 resuelva ese modelo relativo a la release, no al directorio actual del
 administrador. No añada secretos como variables de entorno.
 
-Active y arranque sin construir ni descargar imágenes:
+No active, arranque ni abra HTTPS mediante comandos independientes. Siga
+íntegramente la sección **Instalación inicial** de
+[`../deployment/promotion.md`](../deployment/promotion.md), que es el único
+procedimiento autorizado para publicar una release. Mantiene el lock de
+promoción, persiste `LINK_STATE`, usa el recuperador para rollback y exige
+confirmar `BLOCKED` antes de retirar la regla temporal y `OPENED` después de
+abrir HTTPS. No ejecute `ln`, `ln -sfn`, `mv` ni `ufw allow 443` sobre los
+enlaces o el firewall fuera de ese procedimiento.
 
-```bash
-sudo ln -s "$RELEASE_DIR" /srv/chromat/active
-sudo docker compose --project-directory "$RELEASE_DIR" \
-  --env-file /etc/chromat/production.env -f "$RELEASE_DIR/compose.yaml" up -d --no-build
-sudo docker compose --project-directory "$RELEASE_DIR" \
-  --env-file /etc/chromat/production.env -f "$RELEASE_DIR/compose.yaml" ps
-```
-
-Espere a que estén en ejecución y confirme las comprobaciones de salud:
-
-```bash
-for service in db api worker telegram-worker inference nginx; do
-  sudo docker compose --project-directory "$RELEASE_DIR" \
-    --env-file /etc/chromat/production.env -f "$RELEASE_DIR/compose.yaml" \
-    ps --status running "$service" | grep -q "$service"
-done
-sudo docker inspect --format '{{.Name}} {{.State.Health.Status}}' \
-  chromat-db-1 chromat-api-1 chromat-inference-1
-```
-
-Cree el primer operador una sola vez. La contraseña se monta como archivo
-temporal dentro del contenedor y no aparece en la línea de comandos:
+Después de que la promoción canónica haya confirmado `OPENED`, cree el primer
+operador una sola vez. La contraseña se monta como archivo temporal dentro del
+contenedor y no aparece en la línea de comandos:
 
 ```bash
 sudo docker compose --project-directory "$RELEASE_DIR" \
@@ -196,20 +184,6 @@ sudo docker compose --project-directory "$RELEASE_DIR" \
   -e OPERATOR_PASSWORD_FILE=/run/secrets/operator_password \
   -v /etc/chromat/secrets/operator_password:/run/secrets/operator_password:ro \
   api npm run create-operator -- NOMBRE_DEL_OPERADOR
-```
-
-Verifique HTTPS con la CA y la identidad DNS antes de permitir clientes:
-
-```bash
-export CHROMAT_VM_IP=192.168.1.50
-curl --fail --cacert /srv/chromat/tls/ca.crt \
-  --resolve chromat.lan:443:"$CHROMAT_VM_IP" \
-  https://chromat.lan/health/live
-curl --fail --cacert /srv/chromat/tls/ca.crt \
-  --resolve chromat.lan:443:"$CHROMAT_VM_IP" \
-  https://chromat.lan/health/ready
-sudo ufw allow 443/tcp comment 'CHROMAT HTTPS'
-sudo ufw status verbose
 ```
 
 ## 5. Actualizar una release
@@ -229,51 +203,24 @@ sudo docker compose --project-directory "$RELEASE_DIR" \
   --env-file /etc/chromat/production.env -f "$RELEASE_DIR/compose.yaml" config --quiet
 ```
 
-Después siga íntegramente
-[`../deployment/promotion.md`](../deployment/promotion.md): adquiera el lock,
-cierre 443, haga un backup completo y verificado, revise manualmente que las
-migraciones sean aditivas y compatibles con la release activa, y conserve la
-evidencia.
-
-Cuando esos precondiciones pasen, la activación exacta es:
-
-```bash
-sudo docker compose --project-directory "$RELEASE_DIR" \
-  --env-file /etc/chromat/production.env -f "$RELEASE_DIR/compose.yaml" down
-previous_release="$(readlink -f /srv/chromat/active)"
-sudo ln -sfn "$previous_release" /srv/chromat/previous
-sudo ln -sfn "$RELEASE_DIR" /srv/chromat/active
-sudo docker compose --project-directory "$RELEASE_DIR" \
-  --env-file /etc/chromat/production.env -f "$RELEASE_DIR/compose.yaml" up -d --no-build
-```
-
-Ejecute los readiness y smoke tests de `promotion.md` usando
-`--env-file /etc/chromat/production.env`. Abra 443 solo tras registrar el
-resultado correcto.
+Después siga íntegramente la sección **Actualización** de
+[`../deployment/promotion.md`](../deployment/promotion.md). Es el único flujo
+que puede cambiar `active` o `previous`: adquiere el lock, persiste
+`LINK_STATE`, verifica el backup y conserva el estado para que
+`recover-release-links.sh` pueda restaurar ambos enlaces. La confirmación
+`BLOCKED` es obligatoria antes de retirar la regla temporal y `OPENED` antes
+de eliminar el estado. No replique ni sustituya esos pasos con `ln`, `mv`,
+`docker compose down` o reglas UFW en esta guía.
 
 ## 6. Rollback
 
-El rollback de aplicación solo es válido si las migraciones de la release
-nueva son compatibles hacia atrás. Mantenga 443 cerrado, cargue las imágenes
-de `previous`, apunte `active` a esa release, arranque sin build y repita
-readiness y smoke:
-
-```bash
-sudo ufw delete allow 443/tcp
-previous_release="$(readlink -f /srv/chromat/previous)"
-test -d "$previous_release"
-for image_archive in "$previous_release"/images/*.tar; do
-  sudo docker load --input "$image_archive"
-done
-sudo ln -sfn "$previous_release" /srv/chromat/active
-export RELEASE_DIR="$previous_release"
-sudo docker compose --project-directory "$RELEASE_DIR" \
-  --env-file /etc/chromat/production.env -f "$RELEASE_DIR/compose.yaml" up -d --no-build
-```
-
-No ejecute down-migrations. Si la base no es compatible, el único rollback
-aceptable es restaurar en aislamiento el backup verificado de la versión
-anterior según [`../deployment/backups.md`](../deployment/backups.md).
+Ejecute exclusivamente los escenarios **Aborto y rollback** de
+[`../deployment/promotion.md`](../deployment/promotion.md). El recuperador
+restaura los enlaces desde `LINK_STATE` bajo el lock de promoción; no cambie
+`active`, `previous` ni HTTPS manualmente. No ejecute down-migrations. Si la
+base no es compatible, el único rollback aceptable es restaurar en aislamiento
+el backup verificado de la versión anterior según
+[`../deployment/backups.md`](../deployment/backups.md).
 
 ## Limitaciones verificables
 

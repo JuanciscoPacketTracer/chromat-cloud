@@ -67,6 +67,12 @@ for expected_ip in "$@"; do
   }
 done
 
+openssl x509 -in "$source_dir/server.crt" -noout -ext extendedKeyUsage |
+  grep -Eq 'TLS Web Server Authentication|serverAuth|1\.3\.6\.1\.5\.5\.7\.3\.1' || {
+  printf 'server.crt must include extended key usage serverAuth\n' >&2
+  exit 2
+}
+
 cert_public_key="$(
   openssl x509 -in "$source_dir/server.crt" -pubkey -noout |
     openssl pkey -pubin -outform DER |

@@ -21,3 +21,5 @@ inference/models/*
 
 .DS_Store
 /secrets/
+
+/dist/

@@ -8,6 +8,8 @@ fi
 
 package_dir="$(realpath -e -- "$1")"
 env_file="$(realpath -e -- "$2")"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+source "${script_dir}/lib/backup-config.sh"
 "$package_dir/scripts/verify-artifacts.sh" "$package_dir"
 
 verification_data="$(
@@ -150,16 +152,7 @@ while IFS=$'\t' read -r kind key value; do
   fi
 done <<<"$verification_data"
 
-command -v findmnt >/dev/null || {
-  printf 'findmnt is required to validate BACKUP_EXTERNAL_DIR\n' >&2
-  exit 1
-}
-mount_target="$(findmnt -T "$backup_external_dir" -n -o TARGET)"
-[[ -n "$mount_target" && "$mount_target" != "/" ]] || {
-  printf 'BACKUP_EXTERNAL_DIR must be on a non-root mounted filesystem: %s\n' \
-    "$backup_external_dir" >&2
-  exit 1
-}
+require_independent_external_mount "$backup_external_dir"
 for required_backup_secret in "$db_password" "$db_root_password" "$telegram_token"; do
   found=0
   for backup_secret in "${backup_secret_files[@]}"; do
@@ -195,6 +188,11 @@ openssl x509 -in "$ca_cert" -noout >/dev/null
 openssl pkey -in "$tls_key" -noout >/dev/null
 openssl verify -CAfile "$ca_cert" "$tls_cert" >/dev/null
 openssl x509 -in "$tls_cert" -checkhost chromat.lan -noout >/dev/null
+openssl x509 -in "$tls_cert" -noout -ext extendedKeyUsage |
+  grep -Eq 'TLS Web Server Authentication|serverAuth|1\.3\.6\.1\.5\.5\.7\.3\.1' || {
+  printf 'TLS certificate must include extended key usage serverAuth\n' >&2
+  exit 1
+}
 cert_public_key="$(
   openssl x509 -in "$tls_cert" -pubkey -noout |
     openssl pkey -pubin -outform DER |
