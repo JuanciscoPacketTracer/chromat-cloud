@@ -130,6 +130,14 @@ set -euo pipefail
   exit 97
 }
 printf '%s\n' "$*" >>"$DOCKER_LOG"
+if [[ "${1:-}" == image && "${2:-}" == inspect ]]; then
+  image="${!#}"
+  [[ "$image" == busybox:1.36.1 ]] || exit 1
+  [[ "${FAKE_BUSYBOX_MISSING:-0}" != 1 ]] || exit 1
+  printf '%s %s\n' "${FAKE_BUSYBOX_ID:-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" \
+    "${FAKE_BUSYBOX_ARCHITECTURE:-amd64}"
+  exit 0
+fi
 case "${1:-}" in
   compose)
     if [[ " $* " == *" exec -T db "* ]]; then
@@ -192,6 +200,27 @@ chmod +x "$fake_bin/age" "$fake_bin/findmnt" "$fake_bin/sudo" "$fake_bin/docker"
   "$fake_container_bin/mariadb-dump"
 
 mkdir -p "$work_dir/backups" "$work_dir/external" "$work_dir/state"
+release_dir="$work_dir/release"
+mkdir -p "$release_dir/scripts/lib"
+cp "$repo_root/scripts/backup.sh" "$release_dir/scripts/backup.sh"
+cp "$repo_root/scripts/lib/backup-config.sh" "$release_dir/scripts/lib/backup-config.sh"
+cp "$repo_root/compose.yaml" "$release_dir/compose.yaml"
+mkdir -p "$release_dir/nginx" "$release_dir/db"
+cp -a "$repo_root/nginx/conf.d" "$release_dir/nginx/"
+cp -a "$repo_root/db/migrations" "$release_dir/db/"
+cat >"$release_dir/manifest.json" <<'EOF'
+{
+  "auxiliary_images": [
+    {
+      "name": "busybox:1.36.1",
+      "archive": "images/busybox.tar",
+      "id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "architecture": "amd64"
+    }
+  ]
+}
+EOF
+backup_script="$release_dir/scripts/backup.sh"
 printf 'recipient\n' >"$work_dir/recipient"
 printf 'identity\n' >"$work_dir/identity"
 printf 'private-ca\n' >"$work_dir/ca.key"
@@ -222,10 +251,11 @@ export FAKE_DB_SECRET_FILE="$work_dir/db_root_password"
 export FAKE_CLIENT_ARGS="$work_dir/mariadb-client.args"
 export FAKE_CLIENT_ENV="$work_dir/mariadb-client.env"
 export FAKE_DEFAULTS_PATH="$work_dir/mariadb-defaults.path"
+export FAKE_BUSYBOX_ID=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 if PATH="$fake_bin:$PATH" \
   FAKE_MOUNT_TARGET="$work_dir/external" \
-  sudo -- bash "$repo_root/scripts/backup.sh" --config "$work_dir/missing.env" \
+  sudo -- bash "$backup_script" --config "$work_dir/missing.env" \
     >/dev/null 2>&1; then
   printf 'FAIL: backup accepted a missing production environment file\n' >&2
   exit 1
@@ -233,7 +263,7 @@ fi
 
 if PATH="$fake_bin:$PATH" \
   FAKE_MOUNT_TARGET=/ \
-  sudo -- bash "$repo_root/scripts/backup.sh" --config "$config_file" \
+  sudo -- bash "$backup_script" --config "$config_file" \
     >/dev/null 2>&1; then
   printf 'FAIL: backup accepted an unavailable external mount\n' >&2
   exit 1
@@ -243,7 +273,7 @@ if PATH="$fake_bin:$PATH" \
   FAKE_MOUNT_TARGET="$work_dir/external" \
   FAKE_MOUNT_SOURCE=/dev/root \
   FAKE_MOUNT_DEVICE=8:1 \
-  sudo -- bash "$repo_root/scripts/backup.sh" --config "$config_file" \
+  sudo -- bash "$backup_script" --config "$config_file" \
     >/dev/null 2>&1; then
   printf 'FAIL: backup accepted an external bind mount backed by root\n' >&2
   exit 1
@@ -253,7 +283,7 @@ if PATH="$fake_bin:$PATH" \
   FAKE_MOUNT_TARGET="$work_dir/external" \
   FAKE_MOUNT_SOURCE=/dev/root \
   FAKE_MOUNT_DEVICE=8:16 \
-  sudo -- bash "$repo_root/scripts/backup.sh" --config "$config_file" \
+  sudo -- bash "$backup_script" --config "$config_file" \
     >/dev/null 2>&1; then
   printf 'FAIL: backup accepted an external mount with root source only\n' >&2
   exit 1
@@ -263,7 +293,7 @@ if PATH="$fake_bin:$PATH" \
   FAKE_MOUNT_TARGET="$work_dir/external" \
   FAKE_MOUNT_SOURCE=/dev/external \
   FAKE_MOUNT_DEVICE=8:1 \
-  sudo -- bash "$repo_root/scripts/backup.sh" --config "$config_file" \
+  sudo -- bash "$backup_script" --config "$config_file" \
     >/dev/null 2>&1; then
   printf 'FAIL: backup accepted an external mount with root device only\n' >&2
   exit 1
@@ -272,7 +302,7 @@ fi
 if PATH="$fake_bin:$PATH" \
   FAKE_MOUNT_TARGET="$work_dir/external" \
   FAKE_FAIL_SOURCE=1 \
-  sudo -- bash "$repo_root/scripts/backup.sh" --config "$config_file" \
+  sudo -- bash "$backup_script" --config "$config_file" \
     >/dev/null 2>&1; then
   printf 'FAIL: backup accepted an unavailable mount source\n' >&2
   exit 1
@@ -281,7 +311,7 @@ fi
 if PATH="$fake_bin:$PATH" \
   FAKE_MOUNT_TARGET="$work_dir/external" \
   FAKE_FAIL_MAJ_MIN=1 \
-  sudo -- bash "$repo_root/scripts/backup.sh" --config "$config_file" \
+  sudo -- bash "$backup_script" --config "$config_file" \
     >/dev/null 2>&1; then
   printf 'FAIL: backup accepted an unavailable mount device identifier\n' >&2
   exit 1
@@ -290,7 +320,7 @@ fi
 sed '/BACKUP_SECRET_FILES/d' "$config_file" >"$work_dir/missing-variable.env"
 if PATH="$fake_bin:$PATH" \
   FAKE_MOUNT_TARGET="$work_dir/external" \
-  sudo -- bash "$repo_root/scripts/backup.sh" --config "$work_dir/missing-variable.env" \
+  sudo -- bash "$backup_script" --config "$work_dir/missing-variable.env" \
     >/dev/null 2>&1; then
   printf 'FAIL: backup accepted a production environment with missing variables\n' >&2
   exit 1
@@ -300,7 +330,7 @@ sed "s|BACKUP_SECRET_FILES=.*|BACKUP_SECRET_FILES=$work_dir/db_password|" \
   "$config_file" >"$work_dir/incomplete-secret-list.env"
 if PATH="$fake_bin:$PATH" \
   FAKE_MOUNT_TARGET="$work_dir/external" \
-  sudo -- bash "$repo_root/scripts/backup.sh" --config "$work_dir/incomplete-secret-list.env" \
+  sudo -- bash "$backup_script" --config "$work_dir/incomplete-secret-list.env" \
     >/dev/null 2>&1; then
   printf 'FAIL: backup accepted an incomplete service secret list\n' >&2
   exit 1
@@ -310,7 +340,7 @@ sed "s|BACKUP_SECRET_FILES=.*|BACKUP_SECRET_FILES=$work_dir/db_password $work_di
   "$config_file" >"$work_dir/duplicate-secret-list.env"
 if PATH="$fake_bin:$PATH" \
   FAKE_MOUNT_TARGET="$work_dir/external" \
-  sudo -- bash "$repo_root/scripts/backup.sh" --config "$work_dir/duplicate-secret-list.env" \
+  sudo -- bash "$backup_script" --config "$work_dir/duplicate-secret-list.env" \
     >/dev/null 2>&1; then
   printf 'FAIL: backup accepted a duplicate service secret\n' >&2
   exit 1
@@ -320,17 +350,60 @@ sed "s|BACKUP_SECRET_FILES=.*|BACKUP_SECRET_FILES=$work_dir/ca.key|" \
   "$config_file" >"$work_dir/ca-secret.env"
 if PATH="$fake_bin:$PATH" \
   FAKE_MOUNT_TARGET="$work_dir/external" \
-  sudo -- bash "$repo_root/scripts/backup.sh" --config "$work_dir/ca-secret.env" \
+  sudo -- bash "$backup_script" --config "$work_dir/ca-secret.env" \
     >/dev/null 2>&1; then
   printf 'FAIL: backup accepted the CA private key\n' >&2
   exit 1
 fi
 
+: >"$work_dir/docker.log"
+if PATH="$fake_bin:$PATH" \
+  FAKE_BUSYBOX_MISSING=1 \
+  FAKE_MOUNT_TARGET="$work_dir/external" \
+  sudo -- bash "$backup_script" --config "$config_file" \
+  >/dev/null 2>&1; then
+  printf 'FAIL: backup accepted a missing auxiliary image\n' >&2
+  exit 1
+fi
+if grep -Fq 'docker compose' "$work_dir/docker.log"; then
+  printf 'FAIL: missing auxiliary image altered compose state\n' >&2
+  exit 1
+fi
+if PATH="$fake_bin:$PATH" \
+  FAKE_BUSYBOX_ID=sha256:wrong \
+  FAKE_MOUNT_TARGET="$work_dir/external" \
+  sudo -- bash "$backup_script" --config "$config_file" \
+  >/dev/null 2>&1; then
+  printf 'FAIL: backup accepted an auxiliary image with the wrong ID\n' >&2
+  exit 1
+fi
+if PATH="$fake_bin:$PATH" \
+  FAKE_BUSYBOX_ARCHITECTURE=arm64 \
+  FAKE_MOUNT_TARGET="$work_dir/external" \
+  sudo -- bash "$backup_script" --config "$config_file" \
+  >/dev/null 2>&1; then
+  printf 'FAIL: backup accepted an auxiliary image with the wrong architecture\n' >&2
+  exit 1
+fi
+
 PATH="$fake_bin:$PATH" \
   FAKE_MOUNT_TARGET="$work_dir/external" \
-  sudo -- bash "$repo_root/scripts/backup.sh" --config "$config_file" >/dev/null
+  sudo -- bash "$backup_script" --config "$config_file" >/dev/null
 grep -Fq 'docker compose' "$SUDO_LOG"
-grep -Fq 'docker run' "$SUDO_LOG"
+busybox_run_count="$(
+  grep -Ec \
+    '^run --rm --network none -v chromat_raw_data:/raw:ro -v .*/\.tmp-[^:]+:/backup busybox:1\.36\.1 sh -c' \
+    "$DOCKER_LOG"
+)"
+[[ "$busybox_run_count" == 2 ]]
+grep -Fq 'find . -type f ! -name .maintenance -exec sha256sum {} + | sort' \
+  "$DOCKER_LOG"
+grep -Fq 'tar -czf /backup/raw.tar.gz -T /backup/raw-selection.txt' \
+  "$DOCKER_LOG"
+if grep -Fq 'pull' "$DOCKER_LOG"; then
+  printf 'FAIL: backup attempted to pull an image\n' >&2
+  exit 1
+fi
 if grep -Fq 'pa$$ word"slash\' "$FAKE_CLIENT_ARGS" "$FAKE_CLIENT_ENV"; then
   printf 'FAIL: MariaDB client received the password through argv or environment\n' >&2
   exit 1
@@ -343,7 +416,7 @@ fi
 if PATH="$fake_bin:$PATH" \
   FAKE_MARIADB_FAIL=1 \
   FAKE_MOUNT_TARGET="$work_dir/external" \
-  sudo -- bash "$repo_root/scripts/backup.sh" --config "$config_file" \
+  sudo -- bash "$backup_script" --config "$config_file" \
     >/dev/null 2>&1; then
   printf 'FAIL: backup accepted a failed MariaDB dump\n' >&2
   exit 1

@@ -61,7 +61,13 @@ for signal_spec in \
     exit 1
   fi
 done
-grep -Fq 'LINK_STATE_TMP="$(mktemp /srv/chromat/.promotion-link-state.XXXXXX)"' "$runbook"
+grep -Fq 'CHROMAT_ROOT="${CHROMAT_ROOT:-/srv/chromat}"' "$runbook"
+grep -Fq 'LINK_STATE="$CHROMAT_ROOT/.promotion-link-state"' "$runbook"
+grep -Fq 'LINK_STATE_TMP="$(mktemp "$CHROMAT_ROOT/.promotion-link-state.XXXXXX")"' "$runbook"
+if grep -Fq 'mktemp /srv/chromat/.promotion-link-state.XXXXXX' "$runbook"; then
+  printf 'FAIL: promotion state temporary path must use CHROMAT_ROOT\n' >&2
+  exit 1
+fi
 grep -Fq 'chmod 0600 "$LINK_STATE_TMP"' "$runbook"
 grep -Fq 'mv -fT -- "$LINK_STATE_TMP" "$LINK_STATE"' "$runbook"
 grep -Fq 'UFW por sí solo no demuestra' "$runbook"
@@ -403,8 +409,8 @@ if grep -Fq '. /etc/chromat/production.env' "$runbook"; then
   exit 1
 fi
 
-verify_artifacts_line="$(grep -n 'verify-artifacts.sh' "$runbook" | head -n 1 | cut -d: -f1)"
-link_state_line="$(grep -n 'LINK_STATE=/srv/chromat/.promotion-link-state' "$runbook" | head -n 1 | cut -d: -f1)"
+verify_artifacts_line="$(grep -n '"\$RELEASE_DIR/scripts/verify-artifacts.sh"' "$runbook" | head -n 1 | cut -d: -f1)"
+link_state_line="$(grep -n 'LINK_STATE="$CHROMAT_ROOT/.promotion-link-state"' "$runbook" | head -n 1 | cut -d: -f1)"
 docker_load_line="$(grep -n 'sudo docker load --input' "$runbook" | head -n 1 | cut -d: -f1)"
 verify_environment_line="$(grep -n 'verify-production-environment.sh' "$runbook" | head -n 1 | cut -d: -f1)"
 if (( link_state_line >= verify_artifacts_line || verify_artifacts_line >= docker_load_line || docker_load_line >= verify_environment_line )); then
@@ -439,7 +445,8 @@ if grep -Fq 'group docker' "$ubuntu_runbook" && ! grep -Fq 'no se añade al admi
   printf 'FAIL: Ubuntu production runbook must not add administrators to the Docker group\n' >&2
   exit 1
 fi
-if grep -Eq 'docker compose (build|pull)' "$runbook"; then
+if grep -Eq '^[[:space:]]*(sudo[[:space:]]+)?docker compose (build|pull)([[:space:]]|$)' \
+  "$runbook"; then
   printf 'FAIL: production runbook must not build or pull images\n' >&2
   exit 1
 fi

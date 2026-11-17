@@ -5,6 +5,43 @@ fallo aborta y mantiene `active`, `previous`, volúmenes y datos. No hay
 down-migrations, `git pull`, descarga o construcción mediante Compose, ni
 `docker compose down -v`.
 
+## Flujo de release
+
+El empaquetado ocurre en el host de construcción, no en Ubuntu. Para una
+versión parametrizada:
+
+```bash
+VERSION="${VERSION:?set VERSION to the release version}"
+ARTIFACT_ROOT="${ARTIFACT_ROOT:-dist/artifacts}"
+PACKAGE_DIR="$ARTIFACT_ROOT/$VERSION"
+```
+
+`scripts/package-artifacts.sh` construye las cuatro imágenes de Compose,
+descarga BusyBox como imagen auxiliar fijada por digest, exporta los cinco TAR
+y genera el manifest. La verificación estática se ejecuta sobre `PACKAGE_DIR`;
+la verificación semántica carga los TAR en Docker, comprueba los IDs/config
+digest y arquitecturas, y no realiza pulls ni builds.
+
+Antes de crear cualquier Draft Release deben pasar ambas verificaciones sobre
+el mismo directorio:
+
+```bash
+scripts/verify-artifacts.sh "$PACKAGE_DIR"
+scripts/verify-image-artifacts.sh "$PACKAGE_DIR"
+scripts/create-github-draft-release.sh "$VERSION" "$ARTIFACT_ROOT"
+```
+
+`create-github-draft-release.sh` repite obligatoriamente la verificación
+estática y semántica antes de invocar GitHub CLI. Si Docker, la carga, un ID,
+una arquitectura o cualquier comprobación falla, no crea el Draft Release.
+El Draft permanece sin publicar hasta completar la validación operativa en
+Ubuntu.
+
+En producción no se ejecutan `docker compose pull`, `docker compose build`,
+`docker pull`, `git pull` ni builds. Ubuntu descarga los activos publicados,
+comprueba el checksum, extrae el paquete, verifica su contenido, carga los TAR
+existentes y ejecuta Compose con `PULL_POLICY=never`.
+
 ## Controles comunes
 
 Ejecuta una sola promoción desde un shell root con evidencia local. `pipefail`
@@ -21,9 +58,12 @@ CHROMAT_SSH_PORT="${CHROMAT_SSH_PORT:-${SSH_CONNECTION##* }}"
 sudo env "CHROMAT_SSH_PORT=$CHROMAT_SSH_PORT" bash
 set -euo pipefail
 umask 077
-VERSION=2026.11.12-1
-RELEASE_DIR="/srv/chromat/releases/${VERSION}"
-EVIDENCE_DIR="/var/log/chromat/promotions/${VERSION}"
+CHROMAT_ROOT="${CHROMAT_ROOT:-/srv/chromat}"
+RELEASE_ROOT="${RELEASE_ROOT:-$CHROMAT_ROOT/releases}"
+EVIDENCE_ROOT="${EVIDENCE_ROOT:-/var/log/chromat/promotions}"
+VERSION="${VERSION:?set VERSION to the release version}"
+RELEASE_DIR="$RELEASE_ROOT/$VERSION"
+EVIDENCE_DIR="$EVIDENCE_ROOT/$VERSION"
 old_active=
 old_previous=
 old_active_exists=0
@@ -73,7 +113,7 @@ test "$(stat -c %a -- "$PROMOTION_LOCK")" = 600 || {
 }
 exec 9<>"$PROMOTION_LOCK"
 flock -n 9 || { echo "another promotion is active" >&2; exit 1; }
-LINK_STATE=/srv/chromat/.promotion-link-state
+LINK_STATE="$CHROMAT_ROOT/.promotion-link-state"
 LINK_STATE_TMP=
 cleanup_link_state_tmp() {
   test -z "$LINK_STATE_TMP" || rm -f -- "$LINK_STATE_TMP"
@@ -87,7 +127,7 @@ if test -e "$LINK_STATE" || test -L "$LINK_STATE"; then
   exit 1
 fi
 for link in active previous; do
-  path="/srv/chromat/$link"
+  path="$CHROMAT_ROOT/$link"
   if test -L "$path"; then
     printf -v "old_${link}" '%s' "$(readlink -f "$path")"
     printf -v "old_${link}_exists" 1
@@ -96,7 +136,7 @@ for link in active previous; do
     exit 1
   fi
 done
-LINK_STATE_TMP="$(mktemp /srv/chromat/.promotion-link-state.XXXXXX)"
+LINK_STATE_TMP="$(mktemp "$CHROMAT_ROOT/.promotion-link-state.XXXXXX")"
 printf 'active_exists=%s\nactive_target=%s\nprevious_exists=%s\nprevious_target=%s\n' \
   "$old_active_exists" "$old_active" "$old_previous_exists" "$old_previous" \
   >"$LINK_STATE_TMP"
@@ -112,6 +152,11 @@ done | tee "$EVIDENCE_DIR/images.txt"
   "$RELEASE_DIR" /etc/chromat/production.env \
   | tee "$EVIDENCE_DIR/preflight.txt"
 ```
+
+El glob carga las cuatro imágenes de Compose y, separadamente, la imagen
+auxiliar offline `busybox:1.36.1`. BusyBox no es un servicio de Compose ni se
+configura en `.env`; los backups requieren que permanezca precargada y no
+descargan imágenes.
 
 La verificación de artefactos, carga y preflight ocurren en ese orden. Compose
 siempre usa la release indicada, el proyecto `chromat` y los volúmenes
@@ -230,8 +275,8 @@ Antes de comenzar, confirma que no existe instalación o datos a preservar. No
 se permite reutilizar ni borrar volúmenes sin autorización explícita:
 
 ```bash
-sudo test ! -e /srv/chromat/active
-sudo test ! -e /srv/chromat/previous
+sudo test ! -e "$CHROMAT_ROOT/active"
+sudo test ! -e "$CHROMAT_ROOT/previous"
 sudo test ! -d /var/lib/docker/volumes/chromat_db_data/_data
 sudo test ! -d /var/lib/docker/volumes/chromat_raw_data/_data
 ```
@@ -246,7 +291,7 @@ compose up -d
 compose ps
 mariadb_query 'SELECT version FROM schema_migrations ORDER BY version'
 compose exec -T nginx nginx -t
-CA_CERT=/srv/chromat/tls/ca.crt BASE_URL=https://chromat.lan SMOKE_TESTS=all \
+CA_CERT="$CHROMAT_ROOT/tls/ca.crt" BASE_URL=https://chromat.lan SMOKE_TESTS=all \
   "$RELEASE_DIR/tests/smoke/run.sh"
 ```
 
@@ -262,12 +307,12 @@ inicial. Antes de cambiar la base, exige backup **full**, checksum y
 restauración aislada satisfactoria:
 
 ```bash
-sudo /srv/chromat/active/scripts/backup.sh \
+sudo "$CHROMAT_ROOT/active/scripts/backup.sh" \
   --config /etc/chromat/production.env --mode full \
   | tee "$EVIDENCE_DIR/backup.path"
 backup_dir="$(tail -n 1 "$EVIDENCE_DIR/backup.path")"
 # En el host aislado, después de transferir el backup y la release candidata:
-ISOLATED_RELEASE_DIR="/srv/chromat/releases/${VERSION}"
+ISOLATED_RELEASE_DIR="$RELEASE_ROOT/$VERSION"
 ISOLATED_BACKUP_DIR="/mnt/chromat-backups/$(basename "$backup_dir")"
 sudo "$ISOLATED_RELEASE_DIR/scripts/verify-backup.sh" \
   --config /etc/chromat/restore/restore.env \
@@ -294,7 +339,7 @@ compose ps
 mariadb_query 'SELECT version FROM schema_migrations ORDER BY version' \
   | tee "$EVIDENCE_DIR/migrations.txt"
 compose exec -T nginx nginx -t
-CA_CERT=/srv/chromat/tls/ca.crt BASE_URL=https://chromat.lan SMOKE_TESTS=all \
+CA_CERT="$CHROMAT_ROOT/tls/ca.crt" BASE_URL=https://chromat.lan SMOKE_TESTS=all \
   "$RELEASE_DIR/tests/smoke/run.sh" | tee "$EVIDENCE_DIR/smoke.txt"
 ```
 
@@ -321,20 +366,20 @@ permite recuperar ambos si el proceso falla entre ellos:
 ```bash
 old_active="$(awk -F= '$1 == "active_target" { print $2 }' "$LINK_STATE")"
 old_active_exists="$(awk -F= '$1 == "active_exists" { print $2 }' "$LINK_STATE")"
-rm -f -- /srv/chromat/.active.next /srv/chromat/.previous.next
+rm -f -- "$CHROMAT_ROOT/.active.next" "$CHROMAT_ROOT/.previous.next"
 if test "$old_active_exists" = 1; then
-  ln -s "$old_active" /srv/chromat/.previous.next
-  mv -Tf /srv/chromat/.previous.next /srv/chromat/previous
+  ln -s "$old_active" "$CHROMAT_ROOT/.previous.next"
+  mv -Tf "$CHROMAT_ROOT/.previous.next" "$CHROMAT_ROOT/previous"
 else
-  rm -f -- /srv/chromat/previous
+  rm -f -- "$CHROMAT_ROOT/previous"
 fi
-ln -s "$RELEASE_DIR" /srv/chromat/.active.next
-mv -Tf /srv/chromat/.active.next /srv/chromat/active
-test "$(readlink -f /srv/chromat/active)" = "$RELEASE_DIR"
+ln -s "$RELEASE_DIR" "$CHROMAT_ROOT/.active.next"
+mv -Tf "$CHROMAT_ROOT/.active.next" "$CHROMAT_ROOT/active"
+test "$(readlink -f "$CHROMAT_ROOT/active")" = "$RELEASE_DIR"
 if test "$old_active_exists" = 1; then
-  test "$(readlink -f /srv/chromat/previous)" = "$old_active"
+  test "$(readlink -f "$CHROMAT_ROOT/previous")" = "$old_active"
 else
-  test ! -e /srv/chromat/previous && test ! -L /srv/chromat/previous
+  test ! -e "$CHROMAT_ROOT/previous" && test ! -L "$CHROMAT_ROOT/previous"
 fi
 read -r -p \
   'Confirm from another host that HTTPS is blocked by the validation rule (type BLOCKED): ' \
@@ -387,9 +432,9 @@ estado persistido; **No intercambies enlaces manualmente**:
 ```bash
 compose down
 CHROMAT_PROMOTION_LOCK_HELD=1 "$RELEASE_DIR/scripts/recover-release-links.sh" \
-  --root /srv/chromat --state /srv/chromat/.promotion-link-state
-if test -L /srv/chromat/active; then
-  RELEASE_DIR="$(readlink -f /srv/chromat/active)"
+  --root "$CHROMAT_ROOT" --state "$LINK_STATE"
+if test -L "$CHROMAT_ROOT/active"; then
+  RELEASE_DIR="$(readlink -f "$CHROMAT_ROOT/active")"
   ensure_https_blocked
   compose up -d
 fi
@@ -411,9 +456,9 @@ variable y el recuperador adquiere el lock normalmente. Elimina sólo
 simbólicos temporales y restaura exactamente el par previo:
 
 ```bash
-/srv/chromat/releases/2026.11.12-1/scripts/recover-release-links.sh \
-  --root /srv/chromat --state /srv/chromat/.promotion-link-state
-RELEASE_DIR="$(readlink -f /srv/chromat/active)"
+"$RELEASE_DIR/scripts/recover-release-links.sh" \
+  --root "$CHROMAT_ROOT" --state "$LINK_STATE"
+RELEASE_DIR="$(readlink -f "$CHROMAT_ROOT/active")"
 ensure_https_blocked
 compose up -d
 ```
@@ -426,10 +471,10 @@ y reinicia la anterior:
 
 ```bash
 compose down
-CHROMAT_PROMOTION_LOCK_HELD=1 /srv/chromat/releases/2026.11.12-1/scripts/recover-release-links.sh \
-  --root /srv/chromat --state /srv/chromat/.promotion-link-state
-if test -L /srv/chromat/active; then
-  RELEASE_DIR="$(readlink -f /srv/chromat/active)"
+CHROMAT_PROMOTION_LOCK_HELD=1 "$RELEASE_DIR/scripts/recover-release-links.sh" \
+  --root "$CHROMAT_ROOT" --state "$LINK_STATE"
+if test -L "$CHROMAT_ROOT/active"; then
+  RELEASE_DIR="$(readlink -f "$CHROMAT_ROOT/active")"
   ensure_https_blocked
   compose up -d
 fi

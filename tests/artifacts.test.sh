@@ -3,8 +3,24 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 verifier="$repo_root/scripts/verify-artifacts.sh"
+package_script="$repo_root/scripts/package-artifacts.sh"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
+
+grep -Fq 'docker pull --platform=linux/amd64 "$busybox_source_reference"' "$package_script"
+grep -Fq 'docker tag "$busybox_source_reference" "$busybox_operational_name"' \
+  "$package_script"
+grep -Fq 'docker save -o "$package_dir/images/busybox.tar" "${auxiliary_images[0]}"' \
+  "$package_script"
+grep -Fq 'busybox_source_reference="docker.io/library/busybox@sha256:b7f3d86d6e84fc17718c48bcde1450807faa2d56704205c697b4bd5df7b9e29f"' \
+  "$package_script"
+grep -Fq 'busybox_index_digest="sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662"' \
+  "$package_script"
+grep -Fq 'busybox_platform_digest="sha256:b7f3d86d6e84fc17718c48bcde1450807faa2d56704205c697b4bd5df7b9e29f"' \
+  "$package_script"
+grep -Fq 'busybox_config_digest="sha256:b116e155074440ffd9e449559433feb4cd2341eb3554b1da1c638c976e56451d"' \
+  "$package_script"
+grep -Fq '"auxiliary_images"' "$package_script"
 
 package_dir="$tmp_dir/package"
 mkdir -p "$package_dir/images" "$package_dir/scripts/lib"
@@ -39,6 +55,7 @@ required_files=(
   scripts/recover-release-links.sh \
   scripts/retention.sh \
   scripts/verify-artifacts.sh \
+  scripts/verify-image-artifacts.sh \
   scripts/verify-production-environment.sh \
   scripts/verify-backup.sh \
   tests/smoke/admin-auth.sh \
@@ -66,7 +83,9 @@ required_files=(
   docs/deployment/artifacts.md \
   docs/deployment/backups.md \
   docs/deployment/promotion.md \
-  docs/deployment/tls.md
+  docs/deployment/tls.md \
+  docs/installation/requisitos.md \
+  docs/installation/ubuntu-server-26.04.md
 )
 for path in "${required_files[@]}"; do
   mkdir -p "$(dirname "$package_dir/$path")"
@@ -79,7 +98,7 @@ for path in "${required_files[@]}"; do
 done
 printf 'backup configuration library\n' >"$package_dir/scripts/lib/backup-config.sh"
 chmod 0644 "$package_dir/scripts/lib/backup-config.sh"
-for archive in api inference db nginx; do
+for archive in api inference db nginx busybox; do
   printf '%s image\n' "$archive" >"$package_dir/images/$archive.tar"
 done
 test "$(stat -c %a "$package_dir/scripts/lib/backup-config.sh")" = 644
@@ -105,6 +124,19 @@ cat >"$package_dir/manifest.json" <<'EOF'
     {"name": "chromat-inference:test-1", "archive": "images/inference.tar"},
     {"name": "mariadb:test-1", "archive": "images/db.tar"},
     {"name": "nginx:test-1", "archive": "images/nginx.tar"}
+  ],
+  "auxiliary_images": [
+    {
+      "name": "busybox:1.36.1",
+      "archive": "images/busybox.tar",
+      "id": "sha256:b116e155074440ffd9e449559433feb4cd2341eb3554b1da1c638c976e56451d",
+      "architecture": "amd64",
+      "repo_digests": ["busybox@sha256:test"],
+      "source_reference": "docker.io/library/busybox@sha256:b7f3d86d6e84fc17718c48bcde1450807faa2d56704205c697b4bd5df7b9e29f",
+      "index_digest": "sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662",
+      "platform_digest": "sha256:b7f3d86d6e84fc17718c48bcde1450807faa2d56704205c697b4bd5df7b9e29f",
+      "config_digest": "sha256:b116e155074440ffd9e449559433feb4cd2341eb3554b1da1c638c976e56451d"
+    }
   ]
 }
 EOF
@@ -147,6 +179,28 @@ elif case == "mismatched-model-hash":
     manifest["model_sha256"] = "0" * 64
 elif case == "non-string-model-path":
     manifest["model_path"] = 1
+elif case == "missing-auxiliary-images":
+    del manifest["auxiliary_images"]
+elif case == "wrong-auxiliary-name":
+    manifest["auxiliary_images"][0]["name"] = "busybox:latest"
+elif case == "wrong-auxiliary-archive":
+    manifest["auxiliary_images"][0]["archive"] = "images/api.tar"
+elif case == "missing-auxiliary-id":
+    del manifest["auxiliary_images"][0]["id"]
+elif case == "wrong-auxiliary-id":
+    manifest["auxiliary_images"][0]["id"] = "sha256:wrong"
+elif case == "wrong-auxiliary-architecture":
+    manifest["auxiliary_images"][0]["architecture"] = "arm64"
+elif case == "missing-auxiliary-digest":
+    manifest["auxiliary_images"][0]["repo_digests"] = []
+elif case == "wrong-source-reference":
+    manifest["auxiliary_images"][0]["source_reference"] = "busybox:1.36.1"
+elif case == "wrong-index-digest":
+    manifest["auxiliary_images"][0]["index_digest"] = "sha256:" + "0" * 64
+elif case == "wrong-platform-digest":
+    manifest["auxiliary_images"][0]["platform_digest"] = "sha256:" + "0" * 64
+elif case == "wrong-config-digest":
+    manifest["auxiliary_images"][0]["config_digest"] = "sha256:" + "0" * 64
 else:
     raise SystemExit(f"unknown manifest test case: {case}")
 path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -168,13 +222,25 @@ for case_name in \
   non-string-archive \
   invalid-model-hash \
   mismatched-model-hash \
-  non-string-model-path; do
+  non-string-model-path \
+  missing-auxiliary-images \
+  wrong-auxiliary-name \
+  wrong-auxiliary-archive \
+  missing-auxiliary-id \
+  wrong-auxiliary-id \
+  wrong-auxiliary-architecture \
+  missing-auxiliary-digest \
+  wrong-source-reference \
+  wrong-index-digest \
+  wrong-platform-digest \
+  wrong-config-digest; do
   assert_invalid_manifest "$case_name"
 done
 for critical_path in \
   compose.yaml \
   nginx/conf.d/default.conf \
   db/016_job_event_uniqueness.sql \
+  images/busybox.tar \
   scripts/lib/backup-config.sh \
   model/deterministic-model.json \
   tests/smoke/run.sh \
@@ -204,7 +270,7 @@ tls_dir="$tmp_dir/tls"
 external_backup_dir="$tmp_dir/external-backups"
 mkdir -p "$secrets_dir" "$tls_dir" "$external_backup_dir" "$tmp_dir/bin"
 printf 'model\n' >"$environment_package/model/deterministic-model.json"
-for archive in api inference db nginx; do
+for archive in api inference db nginx busybox; do
   printf '%s image\n' "$archive" >"$environment_package/images/$archive.tar"
 done
 printf 'database-password\n' >"$secrets_dir/db_password"
@@ -237,6 +303,19 @@ cat >"$environment_package/manifest.json" <<EOF
     {"name": "chromat-inference:test-1", "archive": "images/inference.tar", "id": "sha256:inference"},
     {"name": "mariadb:test-1", "archive": "images/db.tar", "id": "sha256:db"},
     {"name": "nginx:test-1", "archive": "images/nginx.tar", "id": "sha256:nginx"}
+  ],
+  "auxiliary_images": [
+    {
+      "name": "busybox:1.36.1",
+      "archive": "images/busybox.tar",
+      "id": "sha256:b116e155074440ffd9e449559433feb4cd2341eb3554b1da1c638c976e56451d",
+      "architecture": "amd64",
+      "repo_digests": ["busybox@sha256:test"],
+      "source_reference": "docker.io/library/busybox@sha256:b7f3d86d6e84fc17718c48bcde1450807faa2d56704205c697b4bd5df7b9e29f",
+      "index_digest": "sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662",
+      "platform_digest": "sha256:b7f3d86d6e84fc17718c48bcde1450807faa2d56704205c697b4bd5df7b9e29f",
+      "config_digest": "sha256:b116e155074440ffd9e449559433feb4cd2341eb3554b1da1c638c976e56451d"
+    }
   ]
 }
 EOF
@@ -476,5 +555,18 @@ grep -Fq 'OPENED' "$artifacts_runbook"
 grep -Fq 'LINK_STATE' "$ubuntu_runbook"
 grep -Fq 'BLOCKED' "$ubuntu_runbook"
 grep -Fq 'OPENED' "$ubuntu_runbook"
+grep -Fq 'releases/download' "$artifacts_runbook"
+grep -Fq 'releases/download' "$ubuntu_runbook"
+grep -Fq 'create-github-draft-release.sh' "$artifacts_runbook"
+grep -Fq 'cp -- "$package_dir/manifest.json" "$release_root/chromat-${version}.manifest.json"' \
+  "$repo_root/scripts/package-artifacts.sh"
+grep -Fq 'docs/installation/ubuntu-server-26.04.md' \
+  "$repo_root/scripts/verify-artifacts.sh"
+test -x "$repo_root/scripts/create-github-draft-release.sh"
+"$repo_root/scripts/create-github-draft-release.sh" --help >/dev/null
+if "$repo_root/scripts/create-github-draft-release.sh" invalid/version >/dev/null 2>&1; then
+  printf 'expected invalid GitHub release version to fail\n' >&2
+  exit 1
+fi
 
 printf 'PASS: artifact package verification contract\n'

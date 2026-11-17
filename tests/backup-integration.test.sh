@@ -17,6 +17,10 @@ if ! sudo -n -- docker image inspect mariadb:11.8.2 >/dev/null 2>&1; then
   printf 'SKIP: backup integration requires the preloaded mariadb:11.8.2 image\n'
   exit 0
 fi
+if ! sudo -n -- docker image inspect busybox:1.36.1 >/dev/null 2>&1; then
+  printf 'SKIP: backup integration requires the preloaded busybox:1.36.1 image\n'
+  exit 0
+fi
 
 work_dir="$(mktemp -d)"
 trap 'rm -rf -- "$work_dir"' EXIT

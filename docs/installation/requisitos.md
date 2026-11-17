@@ -13,7 +13,7 @@ producción hasta contar con una decisión arquitectónica y evidencia propia.
 | Arquitectura | CPU x86_64/amd64. Las construcciones Compose declaran `linux/amd64`. |
 | Sistema de contenedores | Docker Engine y el plugin Docker Compose. |
 | Desarrollo desde Git | Git y acceso de lectura a `https://github.com/JuanciscoPacketTracer/chromat-cloud.git`; este flujo construye imágenes localmente y no es una promoción productiva. |
-| Producción por artefactos | Paquete verificado para `linux/amd64`, Docker Engine, Compose y acceso administrativo mediante `sudo`. El host carga imágenes con `docker load`; no requiere Git ni acceso a registros durante la promoción. |
+| Producción por artefactos | Paquete verificado para `linux/amd64`, Docker Engine, Compose y acceso administrativo mediante `sudo`. El host carga las cuatro imágenes de Compose y la imagen auxiliar BusyBox con `docker load`; no requiere Git ni acceso a registros durante la promoción ni los backups. |
 | Servicios | Nginx 1.29.2, Node.js 26.0.0, Python 3.13.9 y MariaDB 11.8.2, según `compose.yaml` y los Dockerfiles. |
 | Puerto publicado | TCP/443 únicamente. API, workers, inferencia y MariaDB permanecen en la red interna de Compose. |
 | Almacenamiento persistente | Volúmenes Docker `chromat_db_data` y `chromat_raw_data` para MariaDB y datos crudos. |
@@ -22,7 +22,7 @@ producción hasta contar con una decisión arquitectónica y evidencia propia.
 | TLS | `server.crt` y `server.key` se montan de solo lectura en Nginx. Los clientes autorizados validan con `ca.crt`; no se usa `--insecure`. |
 | Inicialización | Las migraciones SQL numeradas están en `db/migrations/`; API, worker y worker de Telegram ejecutan migraciones forward-only al iniciar. |
 | Operador | El primer operador se crea una sola vez con `npm run create-operator`; su contraseña se guarda como Argon2id. |
-| Backup | `scripts/backup.sh` requiere `age`, una identidad/destinatario configurados, un filesystem externo no raíz y Docker. |
+| Backup | `scripts/backup.sh` requiere `age`, un destinatario configurado, un filesystem externo no raíz, Docker y `busybox:1.36.1` precargada desde la release; no descarga imágenes. |
 
 ## Valores recomendados provisionales
 

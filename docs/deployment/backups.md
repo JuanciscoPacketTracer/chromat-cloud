@@ -37,6 +37,13 @@ Incluye `BACKUP_ROOT`, `BACKUP_EXTERNAL_DIR=/mnt/chromat-backups`,
 `BACKUP_AGE_RECIPIENT_FILE`, secretos, estado y modo. El servidor recibe sólo
 el destinatario público age, nunca la identidad privada:
 
+La release contiene cuatro imágenes de Compose y, separadamente, la imagen
+auxiliar `busybox:1.36.1` en `images/busybox.tar`. Carga todas las imágenes
+antes de iniciar el servicio. `backup.sh` comprueba el ID y la arquitectura
+`amd64` de BusyBox contra `manifest.json` antes de crear mantenimiento,
+detener workers o escribir estado; si no coincide, aborta sin `docker pull` ni
+cambios en el backup.
+
 ```dotenv
 BACKUP_SECRET_FILES=/etc/chromat/secrets/db_password /etc/chromat/secrets/db_root_password /etc/chromat/secrets/telegram_bot_token
 ```

@@ -93,6 +93,57 @@ case "${EXTERNAL_DIR}/" in
     exit 2
     ;;
 esac
+MANIFEST_FILE="${ROOT_DIR}/manifest.json"
+[[ -r "${MANIFEST_FILE}" ]] || {
+  printf 'Release manifest is unreadable: %s\n' "${MANIFEST_FILE}" >&2
+  exit 2
+}
+auxiliary_image_data="$(
+  python3 - "${MANIFEST_FILE}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    manifest = json.load(stream)
+auxiliary_images = manifest.get("auxiliary_images")
+if not isinstance(auxiliary_images, list) or len(auxiliary_images) != 1:
+    raise SystemExit("release manifest must list exactly one auxiliary image")
+image = auxiliary_images[0]
+if not isinstance(image, dict):
+    raise SystemExit("release manifest auxiliary image entry must be an object")
+if image.get("name") != "busybox:1.36.1":
+    raise SystemExit("release manifest auxiliary image must be busybox:1.36.1")
+if image.get("archive") != "images/busybox.tar":
+    raise SystemExit("release manifest auxiliary image archive is invalid")
+image_id = image.get("id")
+if not isinstance(image_id, str) or not image_id:
+    raise SystemExit("release manifest auxiliary image is missing an ID")
+if image.get("architecture") != "amd64":
+    raise SystemExit("release manifest auxiliary image architecture must be amd64")
+print(f"{image['name']}\t{image_id}\t{image['architecture']}")
+PY
+)" || {
+  printf 'Release manifest auxiliary image validation failed\n' >&2
+  exit 2
+}
+IFS=$'\t' read -r AUXILIARY_IMAGE_NAME AUXILIARY_IMAGE_ID AUXILIARY_IMAGE_ARCHITECTURE \
+  <<<"${auxiliary_image_data}"
+loaded_auxiliary_image_data="$(
+  sudo -- docker image inspect \
+    --format '{{.Id}} {{.Architecture}}' "${AUXILIARY_IMAGE_NAME}"
+)" || {
+  printf 'Required auxiliary image is not loaded locally: %s\n' \
+    "${AUXILIARY_IMAGE_NAME}" >&2
+  exit 2
+}
+read -r loaded_auxiliary_image_id loaded_auxiliary_image_architecture \
+  <<<"${loaded_auxiliary_image_data}"
+if [[ "${loaded_auxiliary_image_id}" != "${AUXILIARY_IMAGE_ID}" ||
+  "${loaded_auxiliary_image_architecture}" != "${AUXILIARY_IMAGE_ARCHITECTURE}" ]]; then
+  printf 'Loaded auxiliary image does not match the release manifest: %s\n' \
+    "${AUXILIARY_IMAGE_NAME}" >&2
+  exit 2
+fi
 read -r -a secret_files <<<"${SECRET_FILES}"
 required_service_secrets=(
   "${DB_PASSWORD_HOST_FILE}"

@@ -63,6 +63,7 @@ for required_path in \
   scripts/recover-release-links.sh \
   scripts/retention.sh \
   scripts/verify-artifacts.sh \
+  scripts/verify-image-artifacts.sh \
   scripts/verify-production-environment.sh \
   scripts/verify-backup.sh \
   tests/smoke/admin-auth.sh \
@@ -90,7 +91,9 @@ for required_path in \
   docs/deployment/artifacts.md \
   docs/deployment/backups.md \
   docs/deployment/promotion.md \
-  docs/deployment/tls.md; do
+  docs/deployment/tls.md \
+  docs/installation/requisitos.md \
+  docs/installation/ubuntu-server-26.04.md; do
   [[ -f "$package_dir/$required_path" ]] || {
     printf 'artifact package is missing operational file: %s\n' "$required_path" >&2
     exit 1
@@ -109,7 +112,9 @@ backup_config="$package_dir/scripts/lib/backup-config.sh"
   printf 'artifact package backup configuration library must have mode 0644\n' >&2
   exit 1
 }
-for required_image in images/api.tar images/inference.tar images/db.tar images/nginx.tar; do
+for required_image in \
+  images/api.tar images/inference.tar images/db.tar images/nginx.tar \
+  images/busybox.tar; do
   [[ -f "$package_dir/$required_image" ]] || {
     printf 'artifact package is missing image archive: %s\n' "$required_image" >&2
     exit 1
@@ -175,6 +180,62 @@ for image in images:
     resolved_archive = (package_dir / archive).resolve()
     if package_dir not in resolved_archive.parents or not resolved_archive.is_file():
         raise SystemExit(f"image archive is missing: {archive}")
+
+auxiliary_images = manifest.get("auxiliary_images")
+if not isinstance(auxiliary_images, list) or len(auxiliary_images) != 1:
+    raise SystemExit("manifest must list exactly one auxiliary image")
+auxiliary = auxiliary_images[0]
+if not isinstance(auxiliary, dict):
+    raise SystemExit("manifest auxiliary image entry must be an object")
+if auxiliary.get("name") != "busybox:1.36.1":
+    raise SystemExit("manifest auxiliary image must be busybox:1.36.1")
+if auxiliary.get("archive") != "images/busybox.tar":
+    raise SystemExit("manifest auxiliary image must use images/busybox.tar")
+auxiliary_id = auxiliary.get("id")
+if not isinstance(auxiliary_id, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", auxiliary_id):
+    raise SystemExit("manifest auxiliary image id must be a SHA-256 image ID")
+expected_busybox_index_digest = (
+    "sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662"
+)
+expected_busybox_platform_digest = (
+    "sha256:b7f3d86d6e84fc17718c48bcde1450807faa2d56704205c697b4bd5df7b9e29f"
+)
+expected_busybox_config_digest = (
+    "sha256:b116e155074440ffd9e449559433feb4cd2341eb3554b1da1c638c976e56451d"
+)
+if auxiliary_id != expected_busybox_config_digest:
+    raise SystemExit("manifest auxiliary image id does not match the BusyBox config digest")
+source_reference = auxiliary.get("source_reference")
+if source_reference != (
+    "docker.io/library/busybox@"
+    + expected_busybox_platform_digest
+):
+    raise SystemExit("manifest auxiliary image must use the pinned BusyBox platform reference")
+if auxiliary.get("index_digest") != expected_busybox_index_digest:
+    raise SystemExit("manifest auxiliary image index digest is not pinned")
+if auxiliary.get("platform_digest") != expected_busybox_platform_digest:
+    raise SystemExit("manifest auxiliary image platform digest is not pinned")
+if auxiliary.get("config_digest") != expected_busybox_config_digest:
+    raise SystemExit("manifest auxiliary image config digest is not pinned")
+if auxiliary.get("architecture") != "amd64":
+    raise SystemExit("manifest auxiliary image architecture must be amd64")
+repo_digests = auxiliary.get("repo_digests")
+if not isinstance(repo_digests, list) or not repo_digests or not all(
+    isinstance(digest, str)
+    and digest.rsplit("@", 1)[0]
+    in {"busybox", "docker.io/library/busybox", "index.docker.io/library/busybox"}
+    and digest.rsplit("@", 1)[-1].startswith("sha256:")
+    for digest in repo_digests
+):
+    raise SystemExit("manifest auxiliary image must include a busybox repository digest")
+resolved_auxiliary_archive = (
+    package_dir / auxiliary["archive"]
+).resolve()
+if (
+    package_dir not in resolved_auxiliary_archive.parents
+    or not resolved_auxiliary_archive.is_file()
+):
+    raise SystemExit("auxiliary image archive is missing: images/busybox.tar")
 
 model_path_value = manifest.get("model_path", "model/deterministic-model.json")
 if not isinstance(model_path_value, str) or not model_path_value:
