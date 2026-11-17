@@ -11,29 +11,57 @@ acceso al repositorio apt oficial de Docker durante el aprovisionamiento y un
 filesystem externo ya montado para backups. No clone Git ni construya imágenes
 en la VM productiva.
 
-## 1. Crear y transferir una release
+## Estado de validación
 
-En el entorno de construcción amd64, con árbol Git limpio, Docker Engine y
-Docker Compose:
+| Estado | Alcance |
+| --- | --- |
+| Verificado fuera de una VM | La estructura del paquete, sus checksums, el manifiesto y el preflight de configuración se verifican por contratos locales. La release contiene imágenes offline y la guía de instalación. |
+| Pendiente de VM Ubuntu 26.04 AMD64 | Descarga desde una Release publicada, preparación del host, carga de imágenes, TLS, backups, promoción, servicios, smoke, actualización y rollback. Ejecute y registre cada comando de esta guía en la VM; esta documentación no afirma que ya hayan pasado. |
+
+## 1. Descargar una release desde GitHub
+
+> **Pendiente de validación en VM:** esta sección describe el flujo que debe
+> ejecutarse en Ubuntu Server 26.04 AMD64. No se ha ejecutado todavía en una
+> VM objetivo.
 
 ```bash
-scripts/package-artifacts.sh 2026.11.11-1
-cd dist/artifacts
-sha256sum --check chromat-2026.11.11-1.tar.gz.sha256
+# Ejemplo: debe coincidir con una Release publicada, no con un Draft.
+export RELEASE_VERSION=2026.11.12-1
+export REPOSITORY=JuanciscoPacketTracer/chromat-cloud
+export RELEASE_URL="https://github.com/${REPOSITORY}/releases/download/${RELEASE_VERSION}"
+export STAGING_DIR=/srv/chromat/staging
+sudo install -d -o root -g root -m 0700 "$STAGING_DIR"
+sudo curl --fail --location \
+  --output "$STAGING_DIR/chromat-${RELEASE_VERSION}.tar.gz" \
+  "${RELEASE_URL}/chromat-${RELEASE_VERSION}.tar.gz"
+sudo curl --fail --location \
+  --output "$STAGING_DIR/chromat-${RELEASE_VERSION}.tar.gz.sha256" \
+  "${RELEASE_URL}/chromat-${RELEASE_VERSION}.tar.gz.sha256"
+sudo curl --fail --location \
+  --output "$STAGING_DIR/chromat-${RELEASE_VERSION}.manifest.json" \
+  "${RELEASE_URL}/chromat-${RELEASE_VERSION}.manifest.json"
+sudo bash -c '
+set -Eeuo pipefail
+read -r expected_digest _ < "$2"
+actual_digest="$(sha256sum "$1")"
+actual_digest="${actual_digest%% *}"
+[[ "$actual_digest" == "$expected_digest" ]]
+' _ "$STAGING_DIR/chromat-${RELEASE_VERSION}.tar.gz" \
+  "$STAGING_DIR/chromat-${RELEASE_VERSION}.tar.gz.sha256"
 ```
 
-Transfiera por el canal operativo autorizado estos dos archivos a la VM, por
-ejemplo a un directorio de staging creado por el administrador:
-
-```text
-chromat-2026.11.11-1.tar.gz
-chromat-2026.11.11-1.tar.gz.sha256
-```
-
-El checksum protege integridad accidental; no autentica al emisor. ADR-0008
-requiere que el canal de transferencia aporte autenticidad.
+HTTPS cifra la conexión y autentica el servidor de GitHub mediante TLS; no
+demuestra por sí solo quién publicó el artefacto. El checksum detecta
+corrupción accidental, pero tampoco autentica al emisor. Esta release no
+incluye una firma criptográfica para verificar esa autenticidad: el manifiesto
+se compara después con el que está dentro del TAR. No descargue archivos de
+otra fuente ni use una release que siga como draft.
 
 ## 2. Aprovisionar el host
+
+> **Pendiente de validación en VM:** la preparación de Docker, firewall,
+> almacenamiento, TLS y el resto de esta guía requiere evidencia recogida en
+> la VM Ubuntu objetivo.
 
 En la VM, verifique explícitamente la plataforma antes de ejecutar material de
 la release:
@@ -50,13 +78,11 @@ Verifique el tarball antes de extraerlo, extráigalo en staging y verifique su
 contenido antes de ejecutar el aprovisionador:
 
 ```bash
-export RELEASE_VERSION=2026.11.11-1
-export STAGING_DIR=/srv/chromat/staging
-sudo install -d -m 0700 "$STAGING_DIR"
-sudo sha256sum --check "$STAGING_DIR/chromat-${RELEASE_VERSION}.tar.gz.sha256"
 sudo tar -xzf "$STAGING_DIR/chromat-${RELEASE_VERSION}.tar.gz" -C "$STAGING_DIR"
 sudo "$STAGING_DIR/$RELEASE_VERSION/scripts/verify-artifacts.sh" \
   "$STAGING_DIR/$RELEASE_VERSION"
+sudo cmp --silent "$STAGING_DIR/chromat-${RELEASE_VERSION}.manifest.json" \
+  "$STAGING_DIR/$RELEASE_VERSION/manifest.json"
 sudo "$STAGING_DIR/$RELEASE_VERSION/scripts/prepare-ubuntu-production-host.sh"
 ```
 
@@ -91,11 +117,25 @@ que faltan y escribe valores en un editor seguro, sin incluirlos en comandos,
 historial, logs ni Git:
 
 ```bash
-sudo test ! -e /etc/chromat/secrets/db_password && sudo install -m 0600 /dev/null /etc/chromat/secrets/db_password
-sudo test ! -e /etc/chromat/secrets/db_root_password && sudo install -m 0600 /dev/null /etc/chromat/secrets/db_root_password
-sudo test ! -e /etc/chromat/secrets/telegram_bot_token && sudo install -m 0600 /dev/null /etc/chromat/secrets/telegram_bot_token
-sudo test ! -e /etc/chromat/backup-age-recipient && sudo install -m 0600 /dev/null /etc/chromat/backup-age-recipient
-sudo test ! -e /etc/chromat/secrets/operator_password && sudo install -m 0600 /dev/null /etc/chromat/secrets/operator_password
+sudo bash -c '
+set -Eeuo pipefail
+secret_paths=(
+  /etc/chromat/secrets/db_password
+  /etc/chromat/secrets/db_root_password
+  /etc/chromat/secrets/telegram_bot_token
+  /etc/chromat/backup-age-recipient
+  /etc/chromat/secrets/operator_password
+)
+for secret_path in "${secret_paths[@]}"; do
+  if [[ -e "$secret_path" ]]; then
+    printf "secret already exists: %s\n" "$secret_path" >&2
+    exit 1
+  fi
+done
+for secret_path in "${secret_paths[@]}"; do
+  install -m 0600 /dev/null "$secret_path"
+done
+'
 sudoedit /etc/chromat/secrets/db_password
 sudoedit /etc/chromat/secrets/db_root_password
 sudoedit /etc/chromat/secrets/telegram_bot_token
@@ -117,9 +157,10 @@ Un custodio de la CA transfiere un directorio temporal que contenga solamente
 la VM. El certificado debe incluir `chromat.lan` y la IP operativa en SAN:
 
 ```bash
-sudo scripts/install-production-tls.sh \
+sudo "$STAGING_DIR/$RELEASE_VERSION/scripts/install-production-tls.sh" \
   /ruta/temporal/tls /srv/chromat/tls 192.168.1.50
-sudo scripts/check-tls-expiry.sh /srv/chromat/tls/server.crt 30
+sudo "$STAGING_DIR/$RELEASE_VERSION/scripts/check-tls-expiry.sh" \
+  /srv/chromat/tls/server.crt 30
 ```
 
 Consulte [`../deployment/tls.md`](../deployment/tls.md) para validar la
@@ -133,20 +174,23 @@ sobrescribe una release ni se eliminan datos:
 
 ```bash
 export RELEASE_DIR="/srv/chromat/releases/$RELEASE_VERSION"
-test ! -e "$RELEASE_DIR"
+sudo test ! -e "$RELEASE_DIR"
 sudo cp -a "$STAGING_DIR/$RELEASE_VERSION" "$RELEASE_DIR"
 sudo "$RELEASE_DIR/scripts/verify-artifacts.sh" "$RELEASE_DIR"
-for image_archive in "$RELEASE_DIR"/images/*.tar; do
+sudo bash -c 'for image_archive in "$1"/images/*.tar; do
   sudo docker load --input "$image_archive"
-done
+done' _ "$RELEASE_DIR"
 ```
+
+El paquete incluye las cuatro imágenes de Compose y, separadamente, la imagen
+auxiliar `busybox:1.36.1`; el glob anterior carga ambas clases de artefactos.
 
 Inicialice una configuración persistente fuera de la release. El archivo no
 contiene valores secretos: sus referencias apuntan a los archivos anteriores.
 No lo reemplace durante actualizaciones.
 
 ```bash
-test ! -e /etc/chromat/production.env
+sudo test ! -e /etc/chromat/production.env
 sudo install -m 0600 "$RELEASE_DIR/production.env.example" /etc/chromat/production.env
 sudoedit /etc/chromat/production.env
 sudo grep -Fx 'PULL_POLICY=never' /etc/chromat/production.env

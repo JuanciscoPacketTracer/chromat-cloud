@@ -71,7 +71,29 @@ images=(
   "$db_source_image"
   "$nginx_source_image"
 )
-for image in "${images[@]}"; do
+busybox_operational_name="busybox:1.36.1"
+busybox_source_reference="docker.io/library/busybox@sha256:b7f3d86d6e84fc17718c48bcde1450807faa2d56704205c697b4bd5df7b9e29f"
+busybox_index_digest="sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662"
+busybox_platform_digest="sha256:b7f3d86d6e84fc17718c48bcde1450807faa2d56704205c697b4bd5df7b9e29f"
+busybox_config_digest="sha256:b116e155074440ffd9e449559433feb4cd2341eb3554b1da1c638c976e56451d"
+auxiliary_images=(
+  "$busybox_operational_name"
+)
+docker pull --platform=linux/amd64 "$busybox_source_reference"
+busybox_inspect="$(
+  docker image inspect --format '{{.Id}} {{.Architecture}}' "$busybox_source_reference"
+)"
+read -r busybox_id busybox_architecture <<<"$busybox_inspect"
+[[ "$busybox_id" == "$busybox_config_digest" ]] || {
+  printf 'BusyBox image ID does not match the pinned config digest: %s\n' "$busybox_id" >&2
+  exit 1
+}
+[[ "$busybox_architecture" == "amd64" ]] || {
+  printf 'BusyBox architecture does not match linux/amd64: %s\n' "$busybox_architecture" >&2
+  exit 1
+}
+docker tag "$busybox_source_reference" "$busybox_operational_name"
+for image in "${images[@]}" "${auxiliary_images[@]}"; do
   docker image inspect "$image" >/dev/null || {
     printf 'image is not available locally: %s\n' "$image" >&2
     exit 1
@@ -82,6 +104,7 @@ docker save -o "$package_dir/images/api.tar" "$api_release_image"
 docker save -o "$package_dir/images/inference.tar" "$inference_release_image"
 docker save -o "$package_dir/images/db.tar" "$db_source_image"
 docker save -o "$package_dir/images/nginx.tar" "$nginx_source_image"
+docker save -o "$package_dir/images/busybox.tar" "${auxiliary_images[0]}"
 
 cp -- compose.yaml "$package_dir/compose.yaml"
 cp -- .env.example "$package_dir/.env.example"
@@ -94,6 +117,7 @@ cp -R -- scripts "$package_dir/scripts"
 cp -R -- tests "$package_dir/tests"
 mkdir -p "$package_dir/docs"
 cp -R -- docs/deployment "$package_dir/docs/"
+cp -R -- docs/installation "$package_dir/docs/"
 {
   sed \
     -e 's/^APP_ENV=.*/APP_ENV=production/' \
@@ -112,12 +136,15 @@ cp -R -- docs/deployment "$package_dir/docs/"
 } >"$package_dir/production.env.example"
 
 mkdir -p "$package_dir/.metadata"
-for image in "${images[@]}"; do
+for image in "${images[@]}" "${auxiliary_images[@]}"; do
   safe_name="${image//[^A-Za-z0-9._-]/_}"
   docker image inspect "$image" >"$package_dir/.metadata/image-${safe_name}.json"
 done
 
-python3 - "$package_dir" "$version" "$repo_root" "$env_file" "$api_release_image" "$inference_release_image" "$db_source_image" "$nginx_source_image" <<'PY'
+python3 - "$package_dir" "$version" "$repo_root" "$env_file" \
+  "$api_release_image" "$inference_release_image" "$db_source_image" \
+  "$nginx_source_image" "${auxiliary_images[0]}" "$busybox_source_reference" \
+  "$busybox_index_digest" "$busybox_platform_digest" "$busybox_config_digest" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -130,7 +157,11 @@ package_dir = pathlib.Path(sys.argv[1])
 version = sys.argv[2]
 repo_root = pathlib.Path(sys.argv[3])
 env_file = sys.argv[4]
-image_names = sys.argv[5:]
+image_names = sys.argv[5:10]
+busybox_source_reference = sys.argv[10]
+busybox_index_digest = sys.argv[11]
+busybox_platform_digest = sys.argv[12]
+busybox_config_digest = sys.argv[13]
 
 def command(*args):
     return subprocess.check_output(args, text=True).strip()
@@ -149,6 +180,8 @@ def inspect_image(name, archive):
     architecture = image.get("Architecture")
     if architecture != "amd64":
         raise SystemExit(f"{name} has architecture {architecture!r}, expected amd64")
+    if not image.get("Id"):
+        raise SystemExit(f"{name} has no image ID")
     return {
         "name": name,
         "archive": archive,
@@ -209,7 +242,30 @@ manifest = {
             ("images/api.tar", "images/inference.tar", "images/db.tar", "images/nginx.tar"),
         )
     ],
+    "auxiliary_images": [],
 }
+auxiliary = inspect_image(image_names[4], "images/busybox.tar")
+if auxiliary["id"] != busybox_config_digest:
+    raise SystemExit(
+        "busybox:1.36.1 image ID does not match the pinned config digest"
+    )
+if not any(
+    isinstance(digest, str)
+    and digest.rsplit("@", 1)[0]
+    in {"busybox", "docker.io/library/busybox", "index.docker.io/library/busybox"}
+    and digest.rsplit("@", 1)[-1].startswith("sha256:")
+    for digest in auxiliary["repo_digests"]
+):
+    raise SystemExit("busybox:1.36.1 has no repository digest")
+auxiliary.update(
+    {
+        "source_reference": busybox_source_reference,
+        "index_digest": busybox_index_digest,
+        "platform_digest": busybox_platform_digest,
+        "config_digest": busybox_config_digest,
+    }
+)
+manifest["auxiliary_images"].append(auxiliary)
 (package_dir / "manifest.json").write_text(
     json.dumps(manifest, indent=2, sort_keys=True) + "\n",
     encoding="utf-8",
@@ -222,6 +278,8 @@ chmod -R u=rwX,go=rX "$package_dir"
 chmod 0644 "$package_dir/scripts/lib/backup-config.sh"
 chmod 444 "$package_dir/manifest.json" "$package_dir/checksums.sha256"
 
+cp -- "$package_dir/manifest.json" "$release_root/chromat-${version}.manifest.json"
+chmod 444 "$release_root/chromat-${version}.manifest.json"
 tar -C "$release_root" -czf "$release_root/chromat-${version}.tar.gz" "$version"
 (
   cd "$release_root"
