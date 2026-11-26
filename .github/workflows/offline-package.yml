@@ -1,0 +1,109 @@
+name: Offline package
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Package version; an existing matching tag is required to package
+        required: true
+        type: string
+        default: busybox-check
+      package:
+        description: Build the full package after the independent BusyBox test
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: offline-package-${{ github.ref }}-${{ inputs.version }}
+  cancel-in-progress: false
+
+env:
+  VERSION: ${{ inputs.version }}
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  busybox-export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify clean source identity
+        run: python3 -B scripts/ci/offline-artifacts.py check-source
+      - uses: docker/setup-docker-action@e43656e248c0bd0647d3f5c195d116aacf6fcaf4 # v4
+        with:
+          version: v29.10.1
+          set-host: true
+          daemon-config: '{"features":{"containerd-snapshotter":true}}'
+      - name: Pull and verify the pinned BusyBox export
+        run: python3 -B scripts/ci/offline-artifacts.py export-busybox "$RUNNER_TEMP/busybox-export"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: chromat-busybox-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/busybox-export/*
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  busybox-roundtrip:
+    needs: busybox-export
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify clean source identity
+        run: python3 -B scripts/ci/offline-artifacts.py check-source
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: chromat-busybox-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/busybox-export
+      - uses: docker/setup-docker-action@e43656e248c0bd0647d3f5c195d116aacf6fcaf4 # v4
+        with:
+          version: v29.10.1
+          set-host: true
+          daemon-config: '{"features":{"containerd-snapshotter":true}}'
+      - name: Load, reexport and execute offline in an independent image store
+        run: python3 -B scripts/ci/offline-artifacts.py roundtrip-busybox "$RUNNER_TEMP/busybox-export"
+
+  package:
+    if: ${{ inputs.package }}
+    needs: busybox-roundtrip
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require matching local and remote tag before building
+        run: python3 -B scripts/ci/offline-artifacts.py check-source --require-tag
+      - uses: docker/setup-docker-action@e43656e248c0bd0647d3f5c195d116aacf6fcaf4 # v4
+        with:
+          version: v29.10.1
+          set-host: true
+          daemon-config: '{"features":{"containerd-snapshotter":true}}'
+      - name: Build and validate the complete offline package
+        run: python3 -B scripts/ci/offline-artifacts.py package "$RUNNER_TEMP/offline-output"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: chromat-offline-${{ inputs.version }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/offline-output/chromat-${{ inputs.version }}.tar.gz
+            ${{ runner.temp }}/offline-output/chromat-${{ inputs.version }}.tar.gz.sha256
+            ${{ runner.temp }}/offline-output/chromat-${{ inputs.version }}.manifest.json
+            ${{ runner.temp }}/offline-output/chromat-${{ inputs.version }}.ci-provenance.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0

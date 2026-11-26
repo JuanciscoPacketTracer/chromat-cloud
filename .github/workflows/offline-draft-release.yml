@@ -1,0 +1,77 @@
+name: Offline Draft Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing tag used by the successful package run
+        required: true
+        type: string
+      source_run_id:
+        description: Successful manual Offline package run ID
+        required: true
+        type: string
+      confirmation:
+        description: Type CREATE_DRAFT; this workflow never publishes a release
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: offline-draft-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  draft:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: offline-release
+    permissions:
+      contents: write
+      actions: read
+    env:
+      VERSION: ${{ inputs.version }}
+      SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+      DRAFT_CONFIRMATION: ${{ inputs.confirmation }}
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require the same identified source and tag
+        run: python3 -B scripts/ci/offline-artifacts.py check-source --require-tag
+      - name: Resolve a successful build from this repository and commit
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -B scripts/ci/offline-artifacts.py resolve-run "$SOURCE_RUN_ID"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ steps.source.outputs.artifact_name }}
+          path: ${{ runner.temp }}/offline-release
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify provenance, checksum and package structure before loading
+        env:
+          SOURCE_ATTEMPT: ${{ steps.source.outputs.source_attempt }}
+        run: |
+          python3 -B scripts/ci/offline-artifacts.py validate-package \
+            "$RUNNER_TEMP/offline-release" "$SOURCE_RUN_ID" "$SOURCE_ATTEMPT"
+      - uses: docker/setup-docker-action@e43656e248c0bd0647d3f5c195d116aacf6fcaf4 # v4
+        with:
+          version: v29.10.1
+          set-host: true
+          daemon-config: '{"features":{"containerd-snapshotter":true}}'
+      - name: Verify the pinned CI daemon
+        run: |
+          python3 -B -c 'import runpy; runpy.run_path("scripts/ci/offline-artifacts.py")["daemon"]()'
+      - name: Revalidate images and create Draft only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash scripts/create-github-draft-release.sh "$VERSION" "$RUNNER_TEMP/offline-release"
+          gh release upload "$VERSION" \
+            "$RUNNER_TEMP/offline-release/chromat-${VERSION}.ci-provenance.json"
