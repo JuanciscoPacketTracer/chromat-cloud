@@ -10,11 +10,12 @@ remote_repo="$tmp_dir/remote.git"
 mock_bin="$tmp_dir/bin"
 gh_log="$tmp_dir/gh-create-args"
 commit_file="$tmp_dir/manifest-commit"
-mkdir -p "$test_repo/scripts" "$mock_bin"
+mkdir -p "$test_repo/scripts/lib" "$mock_bin"
 cp "$repo_root/scripts/create-github-draft-release.sh" \
   "$repo_root/scripts/verify-artifacts.sh" \
   "$repo_root/scripts/verify-image-artifacts.sh" "$test_repo/scripts/"
 chmod +x "$test_repo/scripts/"*.sh
+cp "$repo_root/scripts/lib/source-provenance.py" "$test_repo/scripts/lib/"
 
 git init -q "$test_repo"
 git -C "$test_repo" config user.email test@example.invalid
@@ -74,6 +75,11 @@ if [[ "$1" == load ]]; then
   [[ "$2" == --input && -f "$3" ]]
   exit 0
 fi
+if [[ "$1" == image && "$2" == save ]]; then
+  [[ "$3" == --platform=linux/amd64 && "$4" == --output ]]
+  cp "${BUSYBOX_EXPORT:?}" "$5"
+  exit 0
+fi
 [[ "$1" == image && "$2" == inspect && "$3" == --format ]]
 [[ "${DOCKER_TEST_MODE:-}" != fail-inspect ]] || exit 1
 case "$5" in
@@ -81,7 +87,7 @@ case "$5" in
   chromat-inference:test) printf '%s amd64\n' "${DOCKER_INFERENCE_ID:-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}" ;;
   mariadb:test) printf '%s amd64\n' "${DOCKER_DB_ID:-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc}" ;;
   nginx:test) printf '%s %s\n' "${DOCKER_NGINX_ID:-sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd}" "${DOCKER_NGINX_ARCH:-amd64}" ;;
-  busybox:1.36.1) printf '%s %s\n' "${DOCKER_BUSYBOX_ID:-sha256:b116e155074440ffd9e449559433feb4cd2341eb3554b1da1c638c976e56451d}" "${DOCKER_BUSYBOX_ARCH:-amd64}" ;;
+  busybox:1.36.1) printf '%s %s\n' "${DOCKER_BUSYBOX_ID:-$(cat "${BUSYBOX_ID_FILE:?}")}" "${DOCKER_BUSYBOX_ARCH:-amd64}" ;;
   *) exit 1 ;;
 esac
 EOF
@@ -102,7 +108,7 @@ copy_package_files() {
   cp "$repo_root/inference/models/deterministic-model.json" "$package_dir/model/"
   cp -a "$repo_root/nginx" "$repo_root/web" "$package_dir/"
   mkdir -p "$package_dir/db"
-  cp -a "$repo_root/db/migrations/." "$package_dir/db/"
+  cp -a "$repo_root/db/migrations" "$package_dir/db/"
   cp -a "$repo_root/scripts" "$package_dir/"
   mkdir -p "$package_dir/tests"
   cp -a "$repo_root/tests/smoke" "$package_dir/tests/"
@@ -186,11 +192,31 @@ create_assets() {
   rm -rf "$release_root"
   mkdir -p "$package_dir/images"
   copy_package_files "$package_dir"
-  for image in api inference db nginx busybox; do
+  for image in api inference db nginx; do
     printf '%s image\n' "$image" >"$package_dir/images/$image.tar"
   done
   printf 'PULL_POLICY=never\n' >"$package_dir/production.env.example"
   write_manifest "$package_dir/manifest.json" "$package_version"
+  python3 "$repo_root/tests/image-identity-fixture.py" "$package_dir" >"$tmp_dir/busybox-pins.json"
+  cp "$package_dir/scripts/lib/image-identity.py" "$test_repo/scripts/lib/"
+  python3 - "$repo_root" "$test_repo" "$package_dir" "$tmp_dir" <<'PY'
+import json
+import pathlib
+import runpy
+import sys
+
+root, test_repo, package, temporary = map(pathlib.Path, sys.argv[1:])
+originals = runpy.run_path(str(root / "scripts/lib/image-identity.py"))
+pins = json.loads((temporary / "busybox-pins.json").read_text())
+verifier = (root / "scripts/verify-artifacts.sh").read_text()
+manifest = (package / "manifest.json").read_text()
+for key, value in pins.items():
+    verifier = verifier.replace(originals[key], value)
+    manifest = manifest.replace(originals[key], value)
+(test_repo / "scripts/verify-artifacts.sh").write_text(verifier)
+(package / "manifest.json").write_text(manifest)
+(temporary / "busybox-id").write_text(pins["CONFIG_DIGEST"])
+PY
   (
     cd "$package_dir"
     find . -type f ! -name checksums.sha256 -print0 | sort -z |
@@ -208,7 +234,9 @@ create_assets() {
 run_release() {
   local version="$1"
   local release_root="$2"
-  GH_CREATE_LOG="$gh_log" PATH="${RELEASE_PATH:-$mock_bin:$PATH}" \
+  GH_CREATE_LOG="$gh_log" BUSYBOX_ID_FILE="$tmp_dir/busybox-id" \
+    BUSYBOX_EXPORT="$release_root/$version/images/busybox.tar" \
+    PATH="${RELEASE_PATH:-$mock_bin:$PATH}" \
     bash "$test_repo/scripts/create-github-draft-release.sh" "$version" "$release_root"
 }
 

@@ -4,6 +4,7 @@ set -Eeuo pipefail
 usage() {
   cat >&2 <<'EOF'
 Usage: scripts/package-artifacts.sh <version> [artifact-root]
+       [--experimental-source snapshot.json --source-sha256 approved-sha256]
 
 Builds linux/amd64 images, exports first-party and third-party images with
 docker save, copies the model/migrations/runtime files, and writes a manifest.
@@ -12,12 +13,28 @@ EOF
 }
 
 version="${1:-}"
-artifact_root="${2:-dist/artifacts}"
 if [[ -z "$version" || "$version" == "--help" ]]; then
   usage
   [[ "$version" == "--help" ]] && exit 0
   exit 2
 fi
+shift
+artifact_root="dist/artifacts"
+if (($#)) && [[ "$1" != --* ]]; then
+  artifact_root="$1"
+  shift
+fi
+source_snapshot=
+source_sha256=
+while (($#)); do
+  [[ $# -ge 2 ]] || { usage; exit 2; }
+  case "$1" in
+    --experimental-source) source_snapshot="$2" ;;
+    --source-sha256) source_sha256="$2" ;;
+    *) usage; exit 2 ;;
+  esac
+  shift 2
+done
 [[ "$version" =~ ^[A-Za-z0-9._-]+$ ]] || {
   printf 'invalid release version: %s\n' "$version" >&2
   exit 2
@@ -32,14 +49,41 @@ for command_name in docker git python3 sha256sum tar; do
   }
 done
 
-env_file="${CHROMAT_ENV_FILE:-.env}"
-[[ -f "$env_file" ]] || env_file=".env.example"
-compose=(docker compose --env-file "$env_file" -f compose.yaml)
-if ! git diff --quiet || ! git diff --cached --quiet ||
-  [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
-  printf 'source tree must be clean before packaging artifacts\n' >&2
-  exit 1
+source_root="$repo_root"
+verified_snapshot=
+if [[ -n "$source_snapshot" || -n "$source_sha256" ]]; then
+  [[ -n "$source_snapshot" && -n "$source_sha256" &&
+    "$version" == experimental-* ]] || {
+    printf 'experimental packaging requires both source approval options and an experimental- version\n' >&2
+    exit 2
+  }
+  [[ "${CHROMAT_ENV_FILE:-.env.example}" == .env.example ]] || {
+    printf 'experimental packaging only accepts CHROMAT_ENV_FILE=.env.example\n' >&2
+    exit 2
+  }
+  source_tmp="$(mktemp -d)"
+  trap 'rm -rf -- "$source_tmp"' EXIT
+  verified_snapshot="$source_tmp/source.json"
+  source_root="$source_tmp/source"
+  python3 "$repo_root/scripts/lib/source-provenance.py" prepare \
+    "$repo_root" "$source_snapshot" "$source_sha256" "$source_root" >"$verified_snapshot"
+  env_file=".env.example"
+else
+  [[ "$version" != experimental-* ]] || {
+    printf 'experimental- versions require explicit source approval\n' >&2
+    exit 2
+  }
+  if ! git diff --quiet || ! git diff --cached --quiet ||
+    [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
+    printf 'source tree must be clean before packaging artifacts\n' >&2
+    exit 1
+  fi
+  env_file="${CHROMAT_ENV_FILE:-.env}"
+  [[ -f "$env_file" ]] || env_file=".env.example"
 fi
+release_root="$(realpath -m "$artifact_root")"
+cd "$source_root"
+compose=(docker compose --env-file "$env_file" -f compose.yaml)
 
 mapfile -t compose_images < <(
   "${compose[@]}" config --format json |
@@ -52,13 +96,12 @@ nginx_source_image="${compose_images[3]}"
 api_release_image="chromat-api:${version}"
 inference_release_image="chromat-inference:${version}"
 
-release_root="$(realpath -m "$artifact_root")"
 package_dir="$release_root/$version"
 [[ ! -e "$package_dir" ]] || {
   printf 'release already exists: %s\n' "$package_dir" >&2
   exit 1
 }
-mkdir -p "$release_root" "$package_dir/images" "$package_dir/model" "$package_dir/db"
+mkdir -p "$release_root" "$package_dir/images" "$package_dir/model" "$package_dir/db/migrations"
 
 "${compose[@]}" pull db nginx
 "${compose[@]}" build --pull=false api worker telegram-worker inference
@@ -84,10 +127,6 @@ busybox_inspect="$(
   docker image inspect --format '{{.Id}} {{.Architecture}}' "$busybox_source_reference"
 )"
 read -r busybox_id busybox_architecture <<<"$busybox_inspect"
-[[ "$busybox_id" == "$busybox_config_digest" ]] || {
-  printf 'BusyBox image ID does not match the pinned config digest: %s\n' "$busybox_id" >&2
-  exit 1
-}
 [[ "$busybox_architecture" == "amd64" ]] || {
   printf 'BusyBox architecture does not match linux/amd64: %s\n' "$busybox_architecture" >&2
   exit 1
@@ -105,11 +144,13 @@ docker save -o "$package_dir/images/inference.tar" "$inference_release_image"
 docker save -o "$package_dir/images/db.tar" "$db_source_image"
 docker save -o "$package_dir/images/nginx.tar" "$nginx_source_image"
 docker save -o "$package_dir/images/busybox.tar" "${auxiliary_images[0]}"
+python3 "$source_root/scripts/lib/image-identity.py" \
+  "$package_dir/images/busybox.tar" "$busybox_id" >"$package_dir/busybox-identity.json"
 
 cp -- compose.yaml "$package_dir/compose.yaml"
 cp -- .env.example "$package_dir/.env.example"
 cp -- inference/models/deterministic-model.json "$package_dir/model/deterministic-model.json"
-cp -- db/migrations/*.sql "$package_dir/db/"
+cp -- db/migrations/*.sql "$package_dir/db/migrations/"
 mkdir -p "$package_dir/nginx" "$package_dir/web"
 cp -R -- nginx/conf.d "$package_dir/nginx/"
 cp -R -- web/public "$package_dir/web/"
@@ -118,6 +159,10 @@ cp -R -- tests "$package_dir/tests"
 mkdir -p "$package_dir/docs"
 cp -R -- docs/deployment "$package_dir/docs/"
 cp -R -- docs/installation "$package_dir/docs/"
+if [[ -n "$verified_snapshot" ]]; then
+  mkdir "$package_dir/provenance"
+  cp -- "$verified_snapshot" "$package_dir/provenance/source.json"
+fi
 {
   sed \
     -e 's/^APP_ENV=.*/APP_ENV=production/' \
@@ -144,7 +189,8 @@ done
 python3 - "$package_dir" "$version" "$repo_root" "$env_file" \
   "$api_release_image" "$inference_release_image" "$db_source_image" \
   "$nginx_source_image" "${auxiliary_images[0]}" "$busybox_source_reference" \
-  "$busybox_index_digest" "$busybox_platform_digest" "$busybox_config_digest" <<'PY'
+  "$busybox_index_digest" "$busybox_platform_digest" "$busybox_config_digest" \
+  "$verified_snapshot" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -162,6 +208,8 @@ busybox_source_reference = sys.argv[10]
 busybox_index_digest = sys.argv[11]
 busybox_platform_digest = sys.argv[12]
 busybox_config_digest = sys.argv[13]
+verified_snapshot = sys.argv[14]
+source_root = pathlib.Path.cwd()
 
 def command(*args):
     return subprocess.check_output(args, text=True).strip()
@@ -191,7 +239,7 @@ def inspect_image(name, archive):
     }
 
 dockerfile_bases = []
-for dockerfile in (repo_root / "api/Dockerfile", repo_root / "inference/Dockerfile"):
+for dockerfile in (source_root / "api/Dockerfile", source_root / "inference/Dockerfile"):
     first_from = next(
         line.split("FROM", 1)[1].strip().split(" AS ", 1)[0]
         for line in dockerfile.read_text().splitlines()
@@ -208,7 +256,7 @@ for name in dockerfile_bases:
         raise SystemExit(f"base image has no repo digest: {name}")
     base_images.append({"name": name, "repo_digests": digests})
 
-migrations = sorted((package_dir / "db").glob("*.sql"))
+migrations = sorted((package_dir / "db/migrations").glob("*.sql"))
 migration_version = max(
     (path.name.split("_", 1)[0] for path in migrations),
     default=None,
@@ -219,11 +267,12 @@ config_hash_input = b"".join(
 )
 manifest = {
     "package_version": version,
+    "package_kind": "experimental" if verified_snapshot else "release",
     "target_platform": "linux/amd64",
     "pull_policy": "never",
     "target_ubuntu_version": "26.04",
-    "git_commit": command("git", "-C", str(repo_root), "rev-parse", "HEAD"),
-    "compose_commit": command("git", "-C", str(repo_root), "hash-object", "compose.yaml"),
+    "git_commit": None if verified_snapshot else command("git", "-C", str(repo_root), "rev-parse", "HEAD"),
+    "compose_commit": command("git", "hash-object", str(package_dir / "compose.yaml")),
     "migration_version": migration_version,
     "model_path": "model/deterministic-model.json",
     "model_sha256": sha256(package_dir / "model/deterministic-model.json"),
@@ -244,10 +293,23 @@ manifest = {
     ],
     "auxiliary_images": [],
 }
+if verified_snapshot:
+    snapshot_path = pathlib.Path(verified_snapshot)
+    snapshot = json.loads(snapshot_path.read_bytes())
+    manifest["source_provenance"] = {
+        key: snapshot[key] for key in (
+            "source_kind", "base_git_commit", "base_git_tree",
+            "patch_sha256", "source_tree_sha256",
+        )
+    }
+    manifest["source_provenance"].update(
+        path="provenance/source.json", approval_sha256=sha256(snapshot_path),
+    )
 auxiliary = inspect_image(image_names[4], "images/busybox.tar")
-if auxiliary["id"] != busybox_config_digest:
+identity = json.loads((package_dir / "busybox-identity.json").read_text())
+if identity["config_digest"] != busybox_config_digest or auxiliary["id"] not in identity["ids"]:
     raise SystemExit(
-        "busybox:1.36.1 image ID does not match the pinned config digest"
+        "busybox:1.36.1 does not match the verified archive identity"
     )
 if not any(
     isinstance(digest, str)
@@ -272,6 +334,7 @@ manifest["auxiliary_images"].append(auxiliary)
 )
 PY
 
+rm "$package_dir/busybox-identity.json"
 rm -rf "$package_dir/.metadata"
 (cd "$package_dir" && find . -type f ! -name checksums.sha256 -print0 | sort -z | xargs -0 sha256sum > checksums.sha256)
 chmod -R u=rwX,go=rX "$package_dir"
@@ -285,10 +348,12 @@ tar -C "$release_root" -czf "$release_root/chromat-${version}.tar.gz" "$version"
   cd "$release_root"
   sha256sum "chromat-${version}.tar.gz" >"chromat-${version}.tar.gz.sha256"
 )
-"$repo_root/scripts/verify-artifacts.sh" "$package_dir"
-if [[ -L "$release_root/active" ]]; then
-  previous_target="$(readlink "$release_root/active")"
-  ln -sfn "$previous_target" "$release_root/previous"
+"$source_root/scripts/verify-artifacts.sh" "$package_dir"
+if [[ -z "$verified_snapshot" ]]; then
+  if [[ -L "$release_root/active" ]]; then
+    previous_target="$(readlink "$release_root/active")"
+    ln -sfn "$previous_target" "$release_root/previous"
+  fi
+  ln -sfn "$version" "$release_root/active"
 fi
-ln -sfn "$version" "$release_root/active"
 printf 'PASS: artifact package created: %s\n' "$package_dir"

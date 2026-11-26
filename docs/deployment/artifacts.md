@@ -36,6 +36,75 @@ nunca lo publica.
 La creación y publicación del tag requiere la autorización operativa
 correspondiente; no forma parte de la instalación en Ubuntu.
 
+## Paquete experimental con parche local identificado
+
+Este flujo **no es una release normal** ni autoriza a construir en el anfitrión
+que ejecuta CHROMAT. Solo se usa en un constructor aislado autorizado.
+El modo normal sigue rechazando cambios locales, incluidos los no rastreados.
+Las migraciones se conservan en `db/migrations/`, igual que en Compose y backup.
+
+`scripts/lib/source-provenance.py capture` registra el commit y tree base,
+el parche binario completo, su SHA-256 y un inventario de todas las fuentes
+con modos Git y SHA-256. Cada archivo nuevo debe declararse individualmente
+con `--include-untracked RUTA`; cualquier adición no declarada aborta.
+El registro del laboratorio, si se incorpora, es también una fuente congelada:
+cambiarlo después requiere otra captura y aprobación.
+La captura reconstruye los blobs del baseline en un directorio temporal
+privado, aplica el parche sin usar el índice Git del checkout y compara
+**todas** las rutas, modos y SHA-256 con el inventario. Si el índice oculta
+cambios (`rm --cached`, `assume-unchanged`, `skip-worktree`) y el parche no
+recupera los bytes actuales, se rechaza la captura antes de aprobarla.
+
+Ejemplo **propuesto**, con un checkout que solo tenga cambios rastreados:
+
+```bash
+BASE="$(git rev-parse HEAD)"
+SNAPSHOT=/ruta/privada/fuera-del-checkout/source.json
+python3 scripts/lib/source-provenance.py capture "$PWD" "$BASE" >"$SNAPSHOT"
+sha256sum "$SNAPSHOT"
+```
+
+Capturar o calcular ese hash **no significa aprobarlo**. Primero se revisan
+el baseline, el parche y los hashes; el operador conserva el SHA-256 aprobado
+por un canal independiente. No sustituir esa aprobación por calcular
+automáticamente el hash justo antes de construir.
+
+Solo después de la aprobación y de autorizar la construcción aislada:
+
+```bash
+VERSION=experimental-laboratorio-1
+APPROVED_SOURCE_SHA256=REEMPLAZAR_POR_EL_SHA256_APROBADO
+scripts/package-artifacts.sh "$VERSION" /ruta/salida-experimental \
+  --experimental-source "$SNAPSHOT" \
+  --source-sha256 "$APPROVED_SOURCE_SHA256"
+```
+
+Se exige `HEAD` igual al baseline, el parche aprobado y coincidencia exacta del
+inventario. `prepare` vuelve a verificar la reconstrucción completa desde los
+blobs base y el parche recibido; no regenera el diff con la configuración Git
+del constructor. También coteja el tree base y los bytes reales del checkout,
+sin confiar en que el índice los marque como modificados.
+El empaquetador prepara una copia temporal privada de los bytes
+identificados, sin Git ni archivos ignorados, y usa exclusivamente
+`.env.example`; un `CHROMAT_ENV_FILE` distinto se rechaza. Los cambios
+posteriores, incluso de modos o nuevas rutas, invalidan la aprobación.
+
+El paquete incluye `provenance/source.json`; su manifiesto registra
+`package_kind=experimental`, `git_commit=null`, el baseline por separado,
+el hash del parche, el hash del inventario y el SHA-256 aprobado.
+`source_tree_sha256` identifica el inventario canónico de rutas/modos/hashes,
+no un commit ni un tree de Git. El manifiesto externo conserva esos mismos
+metadatos. La verificación estática coteja además los archivos operativos
+copiados contra sus hashes de fuente, incluso si se recalculan los checksums.
+
+No se actualizan `active`/`previous`. El creador de Draft rechaza la identidad
+experimental en cualquiera de los dos manifiestos, su directorio de
+procedencia o su prefijo de versión **antes** de cargar imágenes o consultar
+GitHub. No hay un flag que convierta el experimental en release normal.
+Los hashes permiten cotejar una identidad conocida; no son firmas ni prueban
+por sí solos autoría, autenticidad o que las imágenes se construyeran de esas
+fuentes. Eso exige la validación real del constructor y conservar la evidencia.
+
 ## Descargar y comprobar una release
 
 En Ubuntu, descargue los tres activos de la Release publicada mediante HTTPS.
@@ -124,6 +193,35 @@ no forma parte de `verify-artifacts.sh` ni se ejecuta automáticamente en el
 host productivo. Es offline respecto al registry: sólo carga los TAR existentes
 y no realiza pulls ni builds.
 
+BusyBox se verifica además leyendo los bytes de su exportación OCI: manifiesto
+de plataforma fijado, config fijado, Linux/amd64, capas y referencias del tag.
+Cada rama seleccionable del índice OCI, también anidada o sin plataforma
+declarada, debe conducir exclusivamente al manifiesto fijado. Encontrarlo en
+una rama no permite aceptar otro manifiesto Linux/amd64 alternativo. Se
+conserva el soporte para referencias de arquitecturas extranjeras omitidas
+en una exportación de plataforma.
+Los subíndices compartidos se verifican una vez por digest y se limita el
+recorrido a 4096 descriptores, conservando el rechazo de ciclos. Un DAG
+pequeño con muchas rutas repetidas no provoca un recorrido exponencial;
+exceder el presupuesto aborta, sin relajar ningún pin.
+La caché conserva también la altura máxima del subíndice: se comprueba la
+profundidad acumulada de cada ruta incluso al reutilizarlo. Se admiten hasta
+32 subíndices seleccionables bajo la raíz de exportación, independientemente
+del orden de las ramas; un acierto de caché no permite saltarse ese límite.
+`scripts/lib/image-identity.py` no extrae ni carga imágenes. El campo `id`
+conserva el ID nativo del daemon; `config_digest` identifica exclusivamente
+los bytes del JSON config. Con el image store containerd esos valores pueden
+ser distintos. Solo se admite un ID respaldado por la cadena OCI verificada,
+no cualquier ID que declare el manifiesto del paquete.
+
+La validación semántica reexporta BusyBox a un archivo temporal privado tras
+la carga y comprueba nuevamente sus bytes. Conserva también la igualdad del
+ID nativo con el registrado: cambiar de representación entre constructor y
+destino aborta, pues las operaciones de backup dependen de ese ID. No se
+aprueba automáticamente interoperabilidad entre backends distintos.
+Las exportaciones Docker clásicas que no conservan el manifiesto OCI fijado
+se rechazan explícitamente; no se omite su pin para hacerlas pasar.
+
 BusyBox se descarga únicamente durante el empaquetado mediante esta referencia
 inmutable y plataforma explícita:
 
@@ -141,13 +239,14 @@ El manifest registra tres digest distintos:
 | --- | --- |
 | `index_digest` | `sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662`, índice multi-arquitectura asociado al tag oficial. |
 | `platform_digest` | `sha256:b7f3d86d6e84fc17718c48bcde1450807faa2d56704205c697b4bd5df7b9e29f`, manifiesto específico `linux/amd64`. |
-| `config_digest` / `id` | `sha256:b116e155074440ffd9e449559433feb4cd2341eb3554b1da1c638c976e56451d`, ID/configuración de la imagen cargada. |
+| `config_digest` | `sha256:b116e155074440ffd9e449559433feb4cd2341eb3554b1da1c638c976e56451d`, hash de los bytes de configuración. |
+| `id` | ID nativo observado en Docker, respaldado por los bytes verificados del config, manifiesto o índice OCI. |
 
 `docker save` y `docker load` conservan el contenido y los tags, pero no se
 debe asumir que preservan el digest de registry. Por eso la comprobación
-offline compara el `.Id` cargado con `config_digest` y exige `amd64`; no compara
-el `.Id` con `platform_digest` ni exige que `RepoDigests` sobreviva a
-`docker load`.
+offline verifica el config digest sobre sus bytes y exige Linux/amd64;
+comprueba por separado el ID nativo y no exige que `RepoDigests` sobreviva a
+`docker load`. No confunde digest de índice, manifiesto y config.
 
 `manifest.images` conserva las cuatro imágenes de Compose y
 `manifest.auxiliary_images` conserva por separado BusyBox. La descarga fijada

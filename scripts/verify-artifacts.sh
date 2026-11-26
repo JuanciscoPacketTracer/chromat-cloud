@@ -40,22 +40,22 @@ for required_path in \
   web/public/app.js \
   web/public/index.html \
   web/public/styles.css \
-  db/001_initial.sql \
-  db/002_processing.sql \
-  db/003_processing_constraints.sql \
-  db/004_admin_auth.sql \
-  db/005_source_management.sql \
-  db/006_source_access.sql \
-  db/007_retention.sql \
-  db/008_raw_tombstones.sql \
-  db/009_aggregated_state.sql \
-  db/010_aggregation_rule_audit.sql \
-  db/011_aggregated_state_history.sql \
-  db/012_alerts.sql \
-  db/013_alert_interval.sql \
-  db/014_manual_reprocessing.sql \
-  db/015_raw_file_finalization.sql \
-  db/016_job_event_uniqueness.sql \
+  db/migrations/001_initial.sql \
+  db/migrations/002_processing.sql \
+  db/migrations/003_processing_constraints.sql \
+  db/migrations/004_admin_auth.sql \
+  db/migrations/005_source_management.sql \
+  db/migrations/006_source_access.sql \
+  db/migrations/007_retention.sql \
+  db/migrations/008_raw_tombstones.sql \
+  db/migrations/009_aggregated_state.sql \
+  db/migrations/010_aggregation_rule_audit.sql \
+  db/migrations/011_aggregated_state_history.sql \
+  db/migrations/012_alerts.sql \
+  db/migrations/013_alert_interval.sql \
+  db/migrations/014_manual_reprocessing.sql \
+  db/migrations/015_raw_file_finalization.sql \
+  db/migrations/016_job_event_uniqueness.sql \
   scripts/backup.sh \
   scripts/check-tls-expiry.sh \
   scripts/install-production-tls.sh \
@@ -64,6 +64,8 @@ for required_path in \
   scripts/retention.sh \
   scripts/verify-artifacts.sh \
   scripts/verify-image-artifacts.sh \
+  scripts/lib/image-identity.py \
+  scripts/lib/source-provenance.py \
   scripts/verify-production-environment.sh \
   scripts/verify-backup.sh \
   tests/smoke/admin-auth.sh \
@@ -98,7 +100,7 @@ for required_path in \
     printf 'artifact package is missing operational file: %s\n' "$required_path" >&2
     exit 1
   }
-  if [[ "$required_path" == scripts/* && ! -x "$package_dir/$required_path" ]]; then
+  if [[ "$required_path" == scripts/*.sh && ! -x "$package_dir/$required_path" ]]; then
     printf 'artifact package operational script is not executable: %s\n' "$required_path" >&2
     exit 1
   fi
@@ -203,8 +205,6 @@ expected_busybox_platform_digest = (
 expected_busybox_config_digest = (
     "sha256:b116e155074440ffd9e449559433feb4cd2341eb3554b1da1c638c976e56451d"
 )
-if auxiliary_id != expected_busybox_config_digest:
-    raise SystemExit("manifest auxiliary image id does not match the BusyBox config digest")
 source_reference = auxiliary.get("source_reference")
 if source_reference != (
     "docker.io/library/busybox@"
@@ -265,6 +265,11 @@ for path in package_dir.rglob("*"):
     }:
         raise SystemExit(f"secret-like file found in package: {path.relative_to(package_dir)}")
 PY
+
+python3 "$(dirname "${BASH_SOURCE[0]}")/lib/source-provenance.py" verify-package "$package_dir"
+python3 "$(dirname "${BASH_SOURCE[0]}")/lib/image-identity.py" \
+  "$package_dir/images/busybox.tar" \
+  "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["auxiliary_images"][0]["id"])' "$manifest")" >/dev/null
 
 (cd "$package_dir" && sha256sum --check --strict checksums.sha256)
 printf 'PASS: artifact package verified: %s\n' "$package_dir"

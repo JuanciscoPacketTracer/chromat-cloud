@@ -30,6 +30,11 @@ manifest="$package_dir/manifest.json"
   exit 1
 }
 
+identity_verifier="$(dirname "${BASH_SOURCE[0]}")/lib/image-identity.py"
+busybox_identity="$(python3 "$identity_verifier" "$package_dir/images/busybox.tar")"
+tmp_dir="$(mktemp -d)"
+trap 'rm -f "$tmp_dir/busybox.tar"; rmdir "$tmp_dir"' EXIT
+
 image_records="$(
   python3 - "$manifest" <<'PY'
 import json
@@ -73,14 +78,22 @@ while IFS=$'\t' read -r name archive expected_id expected_architecture expected_
     printf 'loaded image is unavailable: %s\n' "$name" >&2
     exit 1
   }
+  if [[ "$name" == "busybox:1.36.1" ]]; then
+    python3 - "$busybox_identity" "$actual_id" "$expected_id" "$expected_config_digest" <<'PY'
+import json
+import sys
+identity = json.loads(sys.argv[1])
+if sys.argv[2] not in identity["ids"] or sys.argv[3] not in identity["ids"]:
+    raise SystemExit("BusyBox daemon/manifest ID does not match verified archive")
+if sys.argv[4] != identity["config_digest"]:
+    raise SystemExit("BusyBox config digest does not match pinned archive bytes")
+PY
+    docker image save --platform=linux/amd64 --output "$tmp_dir/busybox.tar" "$name"
+    python3 "$identity_verifier" "$tmp_dir/busybox.tar" "$actual_id" >/dev/null
+  fi
   if [[ "$actual_id" != "$expected_id" ]]; then
     printf 'image ID does not match manifest for %s: %s != %s\n' \
       "$name" "$actual_id" "$expected_id" >&2
-    exit 1
-  fi
-  if [[ "$name" == "busybox:1.36.1" && "$actual_id" != "$expected_config_digest" ]]; then
-    printf 'BusyBox image ID does not match manifest config digest: %s != %s\n' \
-      "$actual_id" "$expected_config_digest" >&2
     exit 1
   fi
   if [[ "$actual_architecture" != "$expected_architecture" ]]; then

@@ -44,6 +44,23 @@ for path in "$package_dir" "$archive" "$archive_checksum" "$manifest"; do
   }
 done
 
+python3 - "$manifest" "$package_dir" "$version" <<'PY'
+import json
+import pathlib
+import sys
+
+package = pathlib.Path(sys.argv[2])
+if sys.argv[3].startswith("experimental-") or (package / "provenance").exists():
+    raise SystemExit("experimental packages cannot be used for a GitHub release")
+for path in (pathlib.Path(sys.argv[1]), package / "manifest.json"):
+    data = json.loads(path.read_bytes())
+    if (data.get("package_kind", "release") != "release"
+            or "source_provenance" in data
+            or data.get("git_commit") is None
+            or data.get("package_version", "").startswith("experimental-")):
+        raise SystemExit("experimental or unidentified packages cannot be used for a GitHub release")
+PY
+
 (
   cd "$(dirname "$archive")"
   sha256sum --check --strict "$(basename "$archive_checksum")"

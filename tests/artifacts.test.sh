@@ -32,22 +32,22 @@ required_files=(
   web/public/app.js
   web/public/index.html
   web/public/styles.css
-  db/001_initial.sql
-  db/002_processing.sql
-  db/003_processing_constraints.sql
-  db/004_admin_auth.sql
-  db/005_source_management.sql
-  db/006_source_access.sql
-  db/007_retention.sql
-  db/008_raw_tombstones.sql
-  db/009_aggregated_state.sql
-  db/010_aggregation_rule_audit.sql
-  db/011_aggregated_state_history.sql
-  db/012_alerts.sql
-  db/013_alert_interval.sql
-  db/014_manual_reprocessing.sql
-  db/015_raw_file_finalization.sql
-  db/016_job_event_uniqueness.sql
+  db/migrations/001_initial.sql
+  db/migrations/002_processing.sql
+  db/migrations/003_processing_constraints.sql
+  db/migrations/004_admin_auth.sql
+  db/migrations/005_source_management.sql
+  db/migrations/006_source_access.sql
+  db/migrations/007_retention.sql
+  db/migrations/008_raw_tombstones.sql
+  db/migrations/009_aggregated_state.sql
+  db/migrations/010_aggregation_rule_audit.sql
+  db/migrations/011_aggregated_state_history.sql
+  db/migrations/012_alerts.sql
+  db/migrations/013_alert_interval.sql
+  db/migrations/014_manual_reprocessing.sql
+  db/migrations/015_raw_file_finalization.sql
+  db/migrations/016_job_event_uniqueness.sql
   scripts/backup.sh \
   scripts/check-tls-expiry.sh \
   scripts/install-production-tls.sh \
@@ -56,6 +56,7 @@ required_files=(
   scripts/retention.sh \
   scripts/verify-artifacts.sh \
   scripts/verify-image-artifacts.sh \
+  scripts/lib/source-provenance.py \
   scripts/verify-production-environment.sh \
   scripts/verify-backup.sh \
   tests/smoke/admin-auth.sh \
@@ -101,6 +102,9 @@ chmod 0644 "$package_dir/scripts/lib/backup-config.sh"
 for archive in api inference db nginx busybox; do
   printf '%s image\n' "$archive" >"$package_dir/images/$archive.tar"
 done
+python3 "$repo_root/tests/image-identity-fixture.py" "$package_dir" >"$tmp_dir/pins.json"
+cp "$repo_root/scripts/lib/source-provenance.py" "$package_dir/scripts/lib/"
+verifier="$package_dir/scripts/verify-artifacts.sh"
 test "$(stat -c %a "$package_dir/scripts/lib/backup-config.sh")" = 644
 grep -Fq 'chmod 0644 "$package_dir/scripts/lib/backup-config.sh"' \
   "$repo_root/scripts/package-artifacts.sh"
@@ -141,6 +145,13 @@ cat >"$package_dir/manifest.json" <<'EOF'
 }
 EOF
 sed -i "s/__MODEL_SHA256__/$model_sha256/" "$package_dir/manifest.json"
+python3 - "$package_dir/manifest.json" "$tmp_dir/pins.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+manifest = json.loads(path.read_text())
+manifest["auxiliary_images"][0]["id"] = json.load(open(sys.argv[2]))["INDEX_DIGEST"]
+path.write_text(json.dumps(manifest))
+PY
 printf 'PULL_POLICY=never\n' >"$package_dir/production.env.example"
 refresh_checksums "$package_dir"
 
@@ -239,9 +250,11 @@ done
 for critical_path in \
   compose.yaml \
   nginx/conf.d/default.conf \
-  db/016_job_event_uniqueness.sql \
+  db/migrations/016_job_event_uniqueness.sql \
   images/busybox.tar \
   scripts/lib/backup-config.sh \
+  scripts/lib/image-identity.py \
+  scripts/lib/source-provenance.py \
   model/deterministic-model.json \
   tests/smoke/run.sh \
   docs/deployment/promotion.md; do
@@ -254,6 +267,15 @@ for critical_path in \
     exit 1
   fi
 done
+
+corrupt_package="$tmp_dir/corrupt-busybox"
+cp -a "$package_dir" "$corrupt_package"
+printf 'not the pinned image\n' >"$corrupt_package/images/busybox.tar"
+refresh_checksums "$corrupt_package"
+if "$verifier" "$corrupt_package" >/dev/null 2>&1; then
+  printf 'expected wrong image content to fail even with refreshed package checksums\n' >&2
+  exit 1
+fi
 
 printf 'PULL_POLICY=missing\n' >"$package_dir/invalid-production.env"
 refresh_checksums "$package_dir"
@@ -270,7 +292,7 @@ tls_dir="$tmp_dir/tls"
 external_backup_dir="$tmp_dir/external-backups"
 mkdir -p "$secrets_dir" "$tls_dir" "$external_backup_dir" "$tmp_dir/bin"
 printf 'model\n' >"$environment_package/model/deterministic-model.json"
-for archive in api inference db nginx busybox; do
+for archive in api inference db nginx; do
   printf '%s image\n' "$archive" >"$environment_package/images/$archive.tar"
 done
 printf 'database-password\n' >"$secrets_dir/db_password"
@@ -319,6 +341,13 @@ cat >"$environment_package/manifest.json" <<EOF
   ]
 }
 EOF
+python3 - "$environment_package/manifest.json" "$tmp_dir/pins.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+manifest = json.loads(path.read_text())
+manifest["auxiliary_images"][0]["id"] = json.load(open(sys.argv[2]))["INDEX_DIGEST"]
+path.write_text(json.dumps(manifest))
+PY
 cat >"$environment_package/production.env" <<EOF
 PULL_POLICY=never
 CHROMAT_API_IMAGE=chromat-api:test-1
