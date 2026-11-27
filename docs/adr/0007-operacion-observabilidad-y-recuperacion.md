@@ -4,6 +4,10 @@
 - **Fecha:** 2026-11-07
 - **Alcance:** instalación inicial de CHROMAT Server en un Ubuntu Server
 
+> ADR-0010 aplaza backups, restauración y objetivos RPO/RTO para el prototipo
+> actual. El resto de esta decisión conserva su función; consulte el
+> [alcance vigente](0010-desarrollo-y-despliegue-desde-git.md).
+
 ## Contexto
 
 La instalación inicial usa un único servidor, backups manuales y sin alta

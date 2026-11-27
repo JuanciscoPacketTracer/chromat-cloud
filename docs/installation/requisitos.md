@@ -1,5 +1,10 @@
 # Requisitos preliminares de instalación
 
+> **Referencia histórica del flujo offline.** Los requisitos de artefactos,
+> disco externo para backups y releases que siguen están aplazados por
+> [ADR-0010](../adr/0010-desarrollo-y-despliegue-desde-git.md).
+> Para la instalación vigente use [Git + Docker Compose](git-compose.md).
+
 Este documento describe los requisitos observables en el repositorio actual
 para una instalación de CHROMAT Server. La plataforma objetivo es **Ubuntu
 Server 26.04 LTS AMD64**, conforme a ADR-0001. Ubuntu Server 24.04.5 LTS queda

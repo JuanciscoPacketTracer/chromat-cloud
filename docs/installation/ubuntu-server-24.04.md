@@ -1,5 +1,9 @@
 # Guía experimental: Ubuntu Server 24.04.5 LTS AMD64
 
+> Esta guía es histórica. Para desarrollar e instalar desde Git use
+> [Git + Docker Compose](git-compose.md). La compatibilidad de otras versiones
+> de Ubuntu sigue requiriendo validación propia.
+
 Ubuntu Server 24.04.5 es una alternativa de **validación experimental**, no
 una plataforma soportada. ADR-0001 y los manifiestos de artefactos establecen
 Ubuntu Server 26.04 LTS AMD64 como objetivo. No use esta guía para promover una

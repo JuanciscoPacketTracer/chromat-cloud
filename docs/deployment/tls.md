@@ -1,5 +1,10 @@
 # TLS de producción para `chromat.lan`
 
+> Este procedimiento especializado conserva las rutas del despliegue offline.
+> No es un requisito del prototipo local. La configuración TLS del flujo
+> vigente está en [Git + Docker Compose](../installation/git-compose.md).
+> TLS y la validación de certificados por los clientes siguen siendo necesarios.
+
 La CA se administra fuera del servidor. Ubuntu recibe sólo `ca.crt`,
 `server.crt` y `server.key`; `ca.key`, CSR, seriales y certificados de
 desarrollo están prohibidos en el staging y en la VM.
