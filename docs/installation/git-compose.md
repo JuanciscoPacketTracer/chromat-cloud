@@ -213,6 +213,43 @@ Compare `.env.example` con su `.env` si se añaden variables nuevas.
 
 ## 8. Si algo falla
 
+### Python rechaza la CA de laboratorio
+
+Si la demo muestra `CA cert does not include key usage extension`, el certificado
+de CA fue generado sin las extensiones que exige la validación estricta de
+Python reciente. No use `-k`, contextos SSL sin verificación ni desactive
+`VERIFY_X509_STRICT`. Actualizar el código no modifica los certificados
+existentes.
+
+Después de actualizar, compruebe el certificado en uso:
+
+```bash
+openssl verify -x509_strict -purpose sslserver \
+  -CAfile certs/dev/ca.crt certs/dev/server.crt
+```
+
+Para reemplazar **explícitamente los certificados de laboratorio**, conserve los
+anteriores y genere los nuevos, sustituyendo `IP_VM` por la IP actual de la VM.
+Ejecute cada línea por separado y deténgase si falla:
+
+```bash
+mv certs/dev "certs/dev-anterior-$(date +%Y%m%d-%H%M%S)"
+CHROMAT_VM_IP=IP_VM bash scripts/dev-tls.sh
+openssl verify -x509_strict -purpose sslserver -verify_ip IP_VM \
+  -CAfile certs/dev/ca.crt certs/dev/server.crt
+sudo docker compose up -d --force-recreate --no-deps nginx
+curl --fail --cacert certs/dev/ca.crt https://IP_VM/health/ready
+```
+
+Esto cambia la CA: vuelva a distribuir **solo `ca.crt`** e importarla en los
+navegadores autorizados según la sección 6. No copie `ca.key` a otros clientes.
+Los certificados anteriores contienen claves privadas: manténgalos fuera de
+Git y no comparta su directorio. Este procedimiento presupone las rutas
+`certs/dev/` de esta guía; no lo aplique a certificados productivos ni a rutas
+personalizadas sin revisar antes los montajes.
+
+### Diagnóstico general
+
 ```bash
 cd ~/chromat-cloud
 sudo docker compose ps -a

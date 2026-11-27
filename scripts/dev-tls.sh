@@ -11,7 +11,10 @@ openssl ecparam -name prime256v1 -genkey -noout \
 openssl req -x509 -new -sha256 -days 3650 \
   -key "$output_dir/ca.key" \
   -out "$output_dir/ca.crt" \
-  -subj "/CN=CHROMAT Development CA"
+  -subj "/CN=CHROMAT Development CA" \
+  -addext "basicConstraints=critical,CA:TRUE" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign" \
+  -addext "subjectKeyIdentifier=hash"
 
 openssl ecparam -name prime256v1 -genkey -noout \
   -out "$output_dir/server.key"
@@ -24,7 +27,11 @@ san_file="$(mktemp)"
 trap 'rm -f "$san_file"' EXIT
 cat >"$san_file" <<'EOF'
 subjectAltName=DNS:chromat.lan,DNS:localhost,IP:__VM_IP__
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature
 extendedKeyUsage=serverAuth
+subjectKeyIdentifier=hash
+authorityKeyIdentifier=keyid,issuer
 EOF
 sed -i "s/__VM_IP__/$vm_ip/" "$san_file"
 
