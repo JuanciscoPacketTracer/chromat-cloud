@@ -1,174 +1,185 @@
-# Desarrollo e instalación con Git + Docker Compose
+# Instalar CHROMAT en una VM Ubuntu
 
-Esta es la guía principal para Fedora local y un servidor Ubuntu amd64.
-No requiere releases, paquetes offline, otra VM constructora, backups,
-restauración ni rollback. Se conservan los volúmenes y los secretos fuera de Git.
+Guía para **Ubuntu Server 26.04 LTS amd64**, una VM con red puente, 4 vCPU,
+8 GB de RAM y disco de 80 GB. Necesita Internet, acceso SSH y el puerto 443
+libre. No necesita instalar Node.js, Python ni MariaDB en Ubuntu.
 
-## 1. Requisitos
+La instalación, HTTPS y el reinicio se comprobaron en una VM limpia. La
+actualización con `scripts/update.sh` aún está pendiente de comprobar en ella.
+Ejecute los comandos de cada bloque por separado y deténgase ante cualquier error.
 
-- Git, Bash, OpenSSL, curl y Docker Engine con el plugin Docker Compose
-  actualizado (soporte de `up --wait`).
-- Acceso a GitHub y a los registros de imágenes durante la construcción.
-- TCP/443 disponible; para acceder desde Raspberry Pi u otro equipo, red
-  alcanzable y firewall del host permitiendo HTTPS. No exponga MariaDB ni la API.
-- La base actual usa amd64; Raspberry Pi es cliente de captura, no el servidor.
+## 1. Conectarse a la VM
 
-Docker contiene Node.js, Python y MariaDB: no necesita instalarlos en Ubuntu.
-Instale Docker según su [guía oficial](https://docs.docker.com/engine/install/)
-si aún no está disponible. En Fedora con SELinux, revise denegaciones de los
-bind mounts si aparecen errores de permisos; no desactive SELinux globalmente.
-
-En Ubuntu, si el usuario no tiene acceso al socket Docker, anteponga `sudo` a
-los comandos `docker compose` de esta guía. Ejecute Git, `scripts/dev-tls.sh`
-y `scripts/update.sh` como su usuario normal; para el actualizador use
-`bash scripts/update.sh --sudo`. No es necesario añadir el usuario al grupo
-`docker`, que concede privilegios equivalentes a root.
-
-## 2. Primera instalación
-
-En Fedora o en Ubuntu:
+En Ubuntu, consulte su dirección y confirme que SSH esté activo:
 
 ```bash
-git clone https://github.com/JuanciscoPacketTracer/chromat-cloud.git
+ip -br -4 addr
+systemctl is-active ssh
+sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+```
+
+Desde Fedora, sustituya `USUARIO` e `IP_VM`:
+
+```bash
+ssh USUARIO@IP_VM
+```
+
+En la primera conexión compare la huella con la mostrada en la VM y acepte
+solo si coincide. Los siguientes comandos se ejecutan **en la VM por SSH**.
+
+## 2. Instalar Docker y Git
+
+Para una instalación limpia, siga los comandos del
+[repositorio oficial de Docker](https://docs.docker.com/engine/install/ubuntu/):
+
+```bash
+sudo apt update
+sudo apt install -y ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+  -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+```
+
+```bash
+sudo tee /etc/apt/sources.list.d/docker.sources >/dev/null <<'EOF'
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: resolute
+Components: stable
+Architectures: amd64
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io \
+  docker-buildx-plugin docker-compose-plugin git
+sudo systemctl enable --now docker
+sudo docker compose version
+sudo docker run --rm hello-world
+```
+
+Debe aparecer `Hello from Docker!`. No ejecute estos bloques sobre otra
+instalación Docker sin revisar antes su configuración.
+
+## 3. Clonar CHROMAT
+
+La rama indicada contiene actualmente el flujo simplificado:
+
+```bash
+git clone --branch research/wayfinder-deployment-baseline --single-branch \
+  https://github.com/JuanciscoPacketTracer/chromat-cloud.git
 cd chromat-cloud
 ```
 
-El checkout debe contener estos cambios; una rama remota que todavía no los
-incluya no tiene el nuevo flujo. Una vez publicados, use la rama que los contenga
-y mantenga su upstream configurado.
+## 4. Preparar configuración y certificados
 
-Prepare la configuración **una sola vez**, en un checkout nuevo:
+Primero consulte la IPv4 de la VM:
 
 ```bash
-test ! -e .env && cp .env.example .env
-mkdir -p secrets
-chmod 700 secrets
-(umask 077; set -C; openssl rand -hex 32 > secrets/db_password)
-(umask 077; set -C; openssl rand -hex 32 > secrets/db_root_password)
-
-# En Fedora local puede usar 127.0.0.1; en la VM use su IPv4 alcanzable.
-export CHROMAT_VM_IP=127.0.0.1
-bash scripts/dev-tls.sh
-docker compose config --quiet
-docker compose up -d --build --force-recreate --wait --wait-timeout 120
-docker compose ps
-curl --fail --cacert certs/dev/ca.crt \
-  "https://${CHROMAT_VM_IP}/health/ready"
+ip -br -4 addr
 ```
 
-Deténgase si un comando falla. No sobrescriba `.env`, contraseñas o certificados
-en una instalación existente. Cambiar las contraseñas de archivo no cambia
-automáticamente las credenciales de una base ya inicializada.
+Sustituya `IP_VM` por esa IPv4 en el bloque. Ejecútelo **una sola vez**:
 
-Los certificados de este bloque son **de desarrollo/laboratorio**. Para un
-servidor público configure en `.env` `TLS_CERT_HOST_PATH` y
-`TLS_KEY_HOST_PATH` con un certificado válido para su dominio. Los clientes
-deben confiar en su emisor; no use `curl -k` ni desactive la validación TLS.
-El cliente Raspberry Pi solo necesita el certificado público de la CA, nunca
-su clave privada ni las contraseñas de MariaDB.
+```bash
+(
+  set -e
+  if [ -e .env ] || [ -e secrets ] || [ -e certs/dev ]; then
+    echo 'La configuración ya existe; no se sobrescribió.' >&2
+    exit 1
+  fi
+  umask 077
+  cp .env.example .env
+  mkdir secrets
+  openssl rand -hex 32 > secrets/db_password
+  openssl rand -hex 32 > secrets/db_root_password
+  CHROMAT_VM_IP=IP_VM bash scripts/dev-tls.sh
+  sudo docker compose config --quiet
+)
+```
 
-### Primer acceso al panel
+El certificado es solo para laboratorio; no lo use en un servidor público.
+Si cambia la IP, deberá configurar un certificado válido para la nueva dirección.
+No comparta contraseñas ni claves privadas.
 
-Cree una contraseña del operador en un archivo privado; no se guarda en Git
-ni se pasa como argumento:
+## 5. Arrancar y crear el operador
+
+```bash
+sudo docker compose up -d --build --wait --wait-timeout 180
+sudo docker compose ps
+curl --fail --cacert certs/dev/ca.crt https://IP_VM/health/ready
+```
+
+Sustituya `IP_VM` en `curl`. Debe responder `{"status":"ready"}`. Telegram no
+se inicia por defecto. Para activarlo, guarde el token en
+`secrets/telegram_bot_token`, configure `PANEL_URL` y añada
+`COMPOSE_PROFILES=telegram` a `.env`; después reinicie con Compose.
+
+Cree la contraseña para `admin`; no aparecerá mientras la escribe:
 
 ```bash
 (
   umask 077
   set -C
-  read -r -s -p "Contraseña del operador: " password
+  read -r -s -p 'Contraseña nueva para admin: ' password
   printf '\n'
   test -n "$password" && printf '%s\n' "$password" > secrets/operator_password
 )
-docker compose run --rm --no-deps \
+```
+
+```bash
+sudo docker compose run --rm --no-deps \
   -v "$PWD/secrets/operator_password:/run/secrets/operator_password:ro" \
   -e OPERATOR_PASSWORD_FILE=/run/secrets/operator_password \
   api npm run create-operator -- admin
 ```
 
-Este comando crea únicamente el primer operador; no se repite en actualizaciones.
-Abra `https://<IP-o-dominio>/panel/`, con la CA confiable en el navegador.
-El panel actual es de consulta: crear fuentes, productores y asignaciones se
-hace mediante la API administrativa, no mediante botones del panel.
+Debe aparecer `Created operator: admin`. Este paso solo se realiza una vez.
 
-## 3. Trabajo diario en Fedora
+## 6. Abrir el panel desde Fedora
 
-Edite código, compruebe el panel y pruebe imágenes. Para aplicar cambios locales:
+En Fedora, sustituya `USUARIO` e `IP_VM`:
 
 ```bash
-docker compose up -d --build --force-recreate --wait --wait-timeout 120
+(
+  umask 077
+  set -C
+  ssh USUARIO@IP_VM \
+    'cat ~/chromat-cloud/certs/dev/ca.crt' > "$HOME/chromat-server-ca.crt"
+)
+curl --fail --cacert "$HOME/chromat-server-ca.crt" \
+  https://IP_VM/health/ready
 ```
 
-No necesita publicar una release. Tras revisar y probar sus cambios, haga commit
-y push a la rama que usarán los servidores. El servidor no recibe cambios
-que solo existen en su máquina.
+Importe `~/chromat-server-ca.crt` como autoridad para sitios web en el navegador.
+Si anteriormente aceptó una excepción de certificado, cierre y reinicie el
+navegador. Abra `https://IP_VM/panel/` e inicie sesión como `admin`. No
+introduzca la contraseña si el navegador indica que la conexión no es segura.
+El panel aparece vacío hasta crear una Fuente de monitoreo.
 
-## 4. Actualizar un servidor
+## 7. Actualizar el servidor
 
-Desde el checkout del servidor, con árbol limpio y upstream configurado:
-
-```bash
-bash scripts/update.sh
-```
-
-En Ubuntu con Docker accesible solo mediante `sudo`:
+Después de publicar los cambios en la misma rama, en la VM:
 
 ```bash
+cd ~/chromat-cloud
 bash scripts/update.sh --sudo
+sudo docker compose ps
+curl --fail --cacert certs/dev/ca.crt https://IP_VM/health/ready
 ```
 
-La opción eleva únicamente Docker, no Git ni el script completo.
+Sustituya `IP_VM`. El script requiere un árbol Git limpio y usa `sudo` solo
+para Docker. Las migraciones se ejecutan al arrancar; no hay rollback automático.
+Compare `.env.example` con su `.env` si se añaden variables nuevas.
 
-El script comprueba Git/Docker y `.env`, ejecuta `git pull --ff-only`, valida
-Compose, reconstruye y espera los servicios. Aborta ante errores; no crea
-commits, no hace stash, no fuerza merges ni ejecuta backups/restauración.
-Equivale al flujo principal:
+## 8. Si algo falla
 
 ```bash
-git pull --ff-only
-docker compose config --quiet
-docker compose up -d --build --force-recreate --wait --wait-timeout 120
-docker compose ps
+cd ~/chromat-cloud
+sudo docker compose ps -a
+sudo docker compose logs --tail 100 nginx api worker inference db
 ```
 
-`.env`, certificados y secretos se conservan en cada host. Compare los cambios
-de `.env.example` al actualizar: Git no incorpora variables nuevas a su `.env`.
-Nginx vuelve a resolver la dirección de la API si su contenedor cambia.
-Se recrean los contenedores para aplicar también cambios de archivos montados,
-como la configuración de Nginx y las migraciones. Sus volúmenes se conservan.
-
-Las migraciones pendientes se ejecutan al iniciar API/workers con un lock
-compartido. Pueden modificar la base: **no hay deshacer automático**. Los cambios
-de esquema deben revisarse y probarse antes del push. La actualización puede
-interrumpir solicitudes; no garantiza cero downtime.
-
-## 5. Datos, fallos y Telegram opcional
-
-Las fotografías y MariaDB viven en `chromat_raw_data` y `chromat_db_data`.
-Reconstruir/recrear contenedores no elimina esos volúmenes. No use
-`docker compose down -v` ni elimine volúmenes para solucionar errores.
-Sin backups no hay protección ante pérdida del disco: use datos de prueba
-o conserve las fotografías originales fuera del servidor.
-
-Si el arranque falla:
-
-```bash
-docker compose ps -a
-docker compose logs --tail 100 nginx api worker inference db
-```
-
-No publique logs que contengan información privada. Después de cada actualización
-compruebe readiness, acceso al panel y una imagen de prueba desde un cliente;
-un health check no demuestra que el clasificador sea científicamente correcto.
-
-Telegram no se inicia por defecto. Si desea entrega de alertas, prepare
-`secrets/telegram_bot_token` de forma privada, configure `PANEL_URL` y añada
-`COMPOSE_PROFILES=telegram` a `.env`. Luego ejecute el mismo comando de arranque.
-Para desactivarlo en una instalación que ya lo ejecutaba:
-
-```bash
-docker compose --profile telegram stop telegram-worker
-```
-
-Después retire `COMPOSE_PROFILES=telegram` de `.env`. No se borran las alertas
-persistidas; las pendientes pueden entregarse al volver a activar el worker.
+No comparta logs con información privada. No ejecute `docker compose down -v`:
+elimina los volúmenes de datos. Sin backups, una pérdida del disco puede
+eliminar las fotografías y la base de datos.
