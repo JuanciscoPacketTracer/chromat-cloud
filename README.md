@@ -125,6 +125,16 @@ no haya eventos. HSV es experimental y CNN es un simulador, no una red entrenada
 sus resultados no están validados y no son una recomendación de cosecha.
 No se muestran imágenes crudas en el panel.
 
+Para crear una fuente de prueba y enviar las cinco fotografías incluidas,
+ejecute explícitamente en la VM:
+
+```bash
+python3 scripts/demo-photographs.py --url https://IP_VM --username admin
+```
+
+Consulte la [guía de demostración](docs/installation/git-compose.md#preparar-una-demostración-con-las-cinco-fotografías):
+el comando conserva los identificadores al repetirse y no se ejecuta al actualizar.
+
 El harness aislado crea y elimina sus propios servicios y datos de prueba.
 Requiere Docker, acceso a imágenes y capacidad para construir:
 

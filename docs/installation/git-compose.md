@@ -157,6 +157,45 @@ navegador. Abra `https://IP_VM/panel/` e inicie sesión como `admin`. No
 introduzca la contraseña si el navegador indica que la conexión no es segura.
 El panel aparece vacío hasta crear una Fuente de monitoreo.
 
+### Preparar una demostración con las cinco fotografías
+
+Ejecute explícitamente este comando **dentro de cada VM Ubuntu**, después de
+actualizar el repositorio. Requiere Python 3, incluido en Ubuntu Server; no
+instala paquetes Python. Sustituya `IP_VM` por la IP de esa VM:
+
+```bash
+python3 scripts/demo-photographs.py --url https://IP_VM --username admin
+```
+
+Solicita la contraseña del operador sin mostrarla. Crea una Fuente de prueba
+y envía las cinco fotografías de `pruebas/fotografias/` por la API existente,
+espera el procesamiento y muestra el resultado oficial. `mango` es una etiqueta
+de demostración, no una identificación verificada de las fotografías. `day-1`
+y `day-3` son duplicadas exactas, pero se conservan como eventos diferentes.
+HSV es experimental y CNN es un simulador; esta demostración no valida precisión
+científica, recomendaciones de cosecha ni hardware.
+
+Abra el panel como operador y pulse **Actualizar fuentes**. El productor no ve
+la fuente hasta que el operador se la asigne explícitamente. No se crean cuentas
+ni contraseñas compartidas, no se muestran imágenes en el panel y la fuente de
+prueba no genera alertas externas.
+
+Puede repetir el mismo comando: usa los mismos identificadores de fuente y
+eventos, sin crear otra demo. Conserva su API key y manifiesto privados en
+`secrets/demo-photographs/`, excluidos de Git. No comparta ni borre ese directorio:
+sin él no puede recuperarse la identidad de la prueba. Cada checkout mantiene
+su propio manifiesto; no ejecute la demo desde varios checkouts para la misma
+instalación. Cambiar la URL o las fotografías requiere revisión del operador;
+el comando se detiene para evitar enviar credenciales a otro servidor o cambiar
+un evento existente.
+
+Si recibe HTTP 500, se detiene sin reintentar automáticamente. Conserve la hora
+y el identificador de evento, revise el fallo y repita el comando para continuar
+con los mismos identificadores. Un evento en estado `failed` no se reprocesa al
+reenviarlo. El posible HTTP 500 observado en un reintento inmediato de `day-2`
+sigue siendo un hallazgo de ingesta pendiente, sin causa confirmada.
+Este comando no se ejecuta automáticamente al instalar o actualizar la VM.
+
 ## 7. Actualizar el servidor
 
 Después de publicar los cambios en la misma rama, en la VM:
