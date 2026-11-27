@@ -1,5 +1,10 @@
 # Promoción reproducible en Ubuntu
 
+> **Histórico / aplazado:** la prohibición de Git/builds y los requisitos de
+> backup/rollback que siguen pertenecen al flujo offline anterior.
+> [ADR-0010](../adr/0010-desarrollo-y-despliegue-desde-git.md) lo sustituye como
+> ruta principal por [Git + Docker Compose](../installation/git-compose.md).
+
 Este runbook distingue estrictamente instalación inicial y actualización. Un
 fallo aborta y mantiene `active`, `previous`, volúmenes y datos. No hay
 down-migrations, `git pull`, descarga o construcción mediante Compose, ni

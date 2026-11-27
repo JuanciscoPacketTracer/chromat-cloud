@@ -18,21 +18,29 @@ La herramienta complementa la experiencia del productor; no la sustituye.
 
 ## 2. Alcance de este repositorio
 
-Incluye: servidor, API, clasificación de imágenes, base de datos, panel web, alertas y script de captura de la Raspberry Pi.
+Prioridades actuales: **clasificación de imágenes, panel web y captura/envío
+desde Raspberry Pi**. La API, la base de datos y los workers ya implementados
+dan soporte a ese flujo. El cliente de captura Raspberry Pi todavía está pendiente.
 
-No incluye: el entrenamiento de la red neuronal (se hace en otro entorno, por ejemplo Google Colab, y aquí solo se usa el modelo ya entrenado), la encuesta a productores ni su análisis estadístico.
+El entrenamiento de la red neuronal se realiza en otro entorno, por ejemplo
+Google Colab; aquí debe integrarse su inferencia real, aún pendiente. La encuesta
+y su análisis estadístico quedan fuera de este repositorio.
+
+Backups, restauración, rollback, paquetes offline y automatización de releases
+quedan **aplazados**, no son requisitos para desarrollar ni instalar.
+Telegram se conserva como opción, no como dependencia del flujo principal.
 
 ## 3. Arquitectura actual
 
 ```
- Huerta                                  VM Ubuntu Server (Docker Compose)
+ Huerta                                  Fedora / Ubuntu (Docker Compose)
 ┌───────────────┐   imágenes + datos   ┌───────────────────────────────────────────┐
 │ Raspberry Pi  │ ───── HTTPS:443 ───► │  Nginx (443)                              │
 │ + cámara      │                      │    ├─► Panel web                          │
-│ (edge/)       │                      │    └─► API Node.js  ──► Inferencia Python │
+│ (pendiente)   │                      │    └─► API Node.js  ──► Inferencia Python │
 └───────────────┘                      │              │                            │
                                        │              └──► MariaDB                 │
-Productor ──── navegador ────────────► │  Alertas (correo / Telegram)              │
+Productor ──── navegador ────────────► │  Telegram (opcional)                       │
                                        └───────────────────────────────────────────┘
 ```
 
@@ -41,8 +49,8 @@ Productor ──── navegador ────────────► │  Al
 | `nginx` | Nginx | TLS, panel y proxy `/api` | Sí, solo 443 |
 | `api` | Node.js 26 | Ingesta, autenticación, panel y administración | No |
 | `worker` | Node.js 26 | Jobs, inferencia, agregación y alertas | No |
-| `telegram-worker` | Node.js 26 | Entrega Telegram con leases y reintentos | No |
-| `inference` | Python 3.13 | Clasificación HSV/CNN determinista | No |
+| `telegram-worker` | Node.js 26 | Entrega Telegram, perfil opcional `telegram` | No |
+| `inference` | Python 3.13 | Simulador de contrato CNN; modelo real pendiente | No |
 | `db` | MariaDB 11.8 | Metadatos, jobs, Datos derivados y auditoría | No |
 
 **Decisión de seguridad:** solo Nginx publica TCP/443. API, workers, inferencia y MariaDB permanecen en la red interna de Compose.
@@ -55,55 +63,50 @@ Productor ──── navegador ────────────► │  Al
 2. Envía la imagen y los datos a `POST /api/v1/events`.
 3. La API guarda el Evento de monitoreo, el Dato crudo y un único job antes de responder `202`.
 4. El worker procesa el job, conserva ejecuciones versionadas y actualiza el Dato derivado oficial.
-5. El estado agregado genera una alerta deduplicada al entrar en `maduro`; Telegram la entrega con leases y reintentos.
+5. El estado agregado genera una alerta deduplicada al entrar en `maduro`;
+   si se activa Telegram, su worker la entrega con leases y reintentos.
 6. El productor consulta únicamente sus fuentes desde el panel de solo lectura.
 
-## 5. Inicio local
+## 5. Desarrollo y despliegue desde Git
 
+El flujo principal es **editar y probar en Fedora → commit/push → clone/pull
+en Ubuntu → construir y arrancar con Compose**. No requiere otra VM constructora
+ni distribución offline.
+
+Sigue la [guía de Git + Docker Compose](docs/installation/git-compose.md)
+para la primera instalación, secretos, TLS y primer acceso al panel.
+Con la configuración inicial preparada:
+
+```bash
+# Aplicar cambios locales en Fedora:
+docker compose up -d --build --force-recreate --wait --wait-timeout 120
+
+# Actualizar el checkout limpio de un servidor desde su upstream:
+bash scripts/update.sh
 ```
-cp .env.example .env
-export CHROMAT_VM_IP=192.0.2.10 # replace with the VM address
-mkdir -p secrets
-printf '%s\n' 'replace-with-a-development-token' > secrets/telegram_bot_token
-printf '%s\n' 'replace-with-a-development-db-password' > secrets/db_password
-printf '%s\n' 'replace-with-a-development-root-password' > secrets/db_root_password
-bash scripts/dev-tls.sh
-docker compose up --build -d
-```
 
-Los certificados generados por `scripts/dev-tls.sh` son locales y no deben
-usarse como materiales de producción. El único puerto publicado por Compose es
-TCP/443; API, workers, inferencia y MariaDB permanecen internos.
-
-Para smoke tests con TLS verificado, exporta `CA_CERT=$PWD/certs/dev/ca.crt` y
-configura `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `SMOKE_SOURCE_ID` y
-`SMOKE_SOURCE_API_KEY` para la Fuente de monitoreo dedicada. Configura
-`FOREIGN_EVENT_ID` con un evento perteneciente a otra Fuente de monitoreo para
-probar el aislamiento entre fuentes.
-El worker Telegram y las credenciales de MariaDB usan archivos externos
-indicados por `TELEGRAM_BOT_TOKEN_HOST_FILE`, `DB_PASSWORD_HOST_FILE` y
-`DB_ROOT_PASSWORD_HOST_FILE`.
+Solo Nginx publica TCP/443. Se mantienen TLS, autenticación y volúmenes
+persistentes. Los certificados generados por `scripts/dev-tls.sh` son para
+desarrollo/laboratorio, no para un servidor público. Esta etapa es un prototipo:
+sin backups no protege datos irremplazables frente a pérdida del disco.
 
 ## 6. Operación y validación
 
 ### Estado actual
 
-La implementación local cubre ingesta idempotente, procesamiento asíncrono con
-leases y reintentos, inferencia HSV/CNN determinista, autenticación de
-operadores y fuentes, panel de productor, estado agregado, alertas Telegram,
-reprocesamiento auditable, retención, backups, logs estructurados, métricas
-administrativas y protección de capacidad.
+| Parte | Estado |
+|---|---|
+| Ingesta, persistencia, jobs y autenticación | Implementados; comprobar el flujo completo en cada instalación. |
+| HSV | Heurística sobre el color promedio de la imagen; falta validación con fotografías reales. |
+| CNN | Simulador determinista basado en un hash, no una red entrenada ni una medida científica de confianza. |
+| Panel web | Consulta de fuentes, eventos, estado e historial; falta mejorar y validar la experiencia con usuarios. |
+| Raspberry Pi | Captura y envío pendientes de implementar y probar con hardware. |
+| Telegram | Worker opcional; envío real requiere validación independiente. |
+| Git + Compose en Ubuntu | Flujo vigente; falta demostrar instalación y actualización en la VM objetivo. |
 
-La suite API tiene 13 pruebas pasando. También pasan la validación de Compose,
-la sintaxis Bash/Python y el smoke skeleton. La validación E2E completa requiere
-un entorno Compose iniciado, credenciales de smoke y una CA confiable; el envío
-real a Telegram se valida separadamente.
-
-El despliegue reproducible Fedora → Ubuntu está chartado, pero permanece como
-trabajo abierto en los tickets Wayfinder #31–#35: paquete amd64, host Ubuntu,
-TLS de producción, backup/restore y runbook de readiness/smoke/rollback.
-CI/CD, Kubernetes, alta disponibilidad y escalado horizontal siguen fuera de
-alcance.
+El siguiente objetivo es demostrar una fotografía real desde Raspberry Pi,
+su clasificación y su consulta en el panel. Después se medirá el desempeño
+del modelo real. El entrenamiento no se sustituye con pruebas del simulador.
 
 Las pruebas unitarias de la API se ejecutan desde `api/`:
 
@@ -112,27 +115,32 @@ cd api
 npm test
 ```
 
-La suite de smoke tests requiere un despliegue iniciado y una CA confiable:
+El harness aislado crea y elimina sus propios servicios y datos de prueba.
+Requiere Docker, acceso a imágenes y capacidad para construir:
 
 ```bash
-CA_CERT="$PWD/certs/dev/ca.crt" \
-SMOKE_TESTS=all \
-tests/smoke/run.sh
+bash tests/smoke/isolated.sh
 ```
 
-Los backups se generan con `scripts/backup.sh` y se validan en aislamiento con
-`scripts/verify-backup.sh`. Las migraciones son numeradas y forward-only.
-La preparación de paquetes Fedora → Ubuntu está documentada en
-[`docs/deployment/artifacts.md`](docs/deployment/artifacts.md).
-La operación de backups cifrados, retención y restauración está documentada en
-[`docs/deployment/backups.md`](docs/deployment/backups.md).
-La promoción manual con readiness, smoke tests y rollback compatible está
-documentada en [`docs/deployment/promotion.md`](docs/deployment/promotion.md).
-Los requisitos y la guía de instalación productiva para Ubuntu Server 26.04
-están en [`docs/installation/requisitos.md`](docs/installation/requisitos.md)
-y [`docs/installation/ubuntu-server-26.04.md`](docs/installation/ubuntu-server-26.04.md).
-[`docs/installation/ubuntu-server-24.04.md`](docs/installation/ubuntu-server-24.04.md)
-documenta una alternativa experimental, no soportada para producción.
+Para comprobar el actualizador y el Compose principal sin tocar servicios
+existentes:
+
+```bash
+python3 -B tests/update.test.py
+bash tests/git-compose.test.sh
+```
+
+La segunda prueba requiere Compose con soporte de `!reset` (2.24.4 o posterior).
+Comprueba TLS, acceso al panel, cambios de IP de la API y persistencia al recrear
+contenedores. La prueba de actualización usa Git real local y Docker simulado;
+no demuestra instalación en Ubuntu ni desempeño del clasificador.
+
+Las migraciones siguen siendo numeradas y forward-only; no hay deshacer
+automático de cambios de esquema. La decisión de simplificación está en
+[ADR-0010](docs/adr/0010-desarrollo-y-despliegue-desde-git.md).
+Los scripts y documentos de artefactos, backups y promoción se conservan como
+trabajo histórico, no como ruta obligatoria. Sus tickets antiguos no representan
+el orden de trabajo actual.
 
 ## 7. Convenciones
 

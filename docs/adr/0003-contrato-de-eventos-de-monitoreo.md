@@ -64,7 +64,11 @@ La fuente debe conservar el mismo evento para reintentos y sincronizar su reloj
 por NTP. CHROMAT Server garantiza autenticación, validación, idempotencia y
 persistencia previa a `202`, además de no duplicar trabajos.
 
-El límite de CHROMAT Server termina en Nginx, API, worker, inferencia Python y
+> [ADR-0010](0010-desarrollo-y-despliegue-desde-git.md) amplía el alcance para
+> incluir el futuro cliente de captura Raspberry Pi. El contrato de eventos
+> de esta decisión se mantiene.
+
+El límite original de CHROMAT Server termina en Nginx, API, worker, inferencia Python y
 MariaDB. Quedan fuera el script de captura de la Raspberry Pi, el entrenamiento
 del modelo, la encuesta a productores y la aplicación móvil; esta última solo
 consumirá la API.

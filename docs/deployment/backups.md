@@ -1,5 +1,10 @@
 # Backups cifrados y restauración verificable
 
+> **Aplazado:** backups, restauración y objetivos RPO/RTO no son requisitos
+> de la etapa actual. Este documento conserva el trabajo previo.
+> Use [Git + Docker Compose](../installation/git-compose.md) para instalar
+> y actualizar; sin backups no se garantiza recuperación de datos perdidos.
+
 El objetivo es RPO de 24 horas, RTO de 4 horas y al menos siete cadenas
 recuperables. La retención inicial es 14 días; un incremental se conserva sólo
 con su full base y todos los incrementales requeridos. Antes de toda

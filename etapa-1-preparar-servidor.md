@@ -1,5 +1,10 @@
 # Etapa 1: Provisionar y endurecer Ubuntu Server
 
+> **Histórico / aplazado:** los requisitos de release offline que siguen ya
+> no son la ruta principal. Use [Git + Docker Compose](docs/installation/git-compose.md)
+> para el prototipo actual. No es necesario repetir este aprovisionamiento
+> si el host ya tiene Docker, Compose y acceso administrativo funcionando.
+
 Runbook manual para dejar un único Ubuntu Server amd64 listo para ejecutar una
 release verificada de CHROMAT Server mediante Docker Compose. Fedora construye
 y valida los artefactos; este servidor no reconstruye imágenes ni monta código

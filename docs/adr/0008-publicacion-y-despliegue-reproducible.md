@@ -1,6 +1,6 @@
 # ADR-0008: Publicación y despliegue reproducible
 
-- **Estado:** Aceptada
+- **Estado:** Sustituida por [ADR-0010](0010-desarrollo-y-despliegue-desde-git.md).
 - **Fecha:** 2026-11-07
 - **Alcance:** promoción desde desarrollo local hasta Ubuntu Server
 

@@ -1,5 +1,10 @@
 # Guía de producción: Ubuntu Server 26.04 LTS AMD64
 
+> **Histórico / aplazado:** esta guía conserva el despliegue offline anterior,
+> no la ruta vigente. Se permite clonar, actualizar y construir en el servidor
+> según [Git + Docker Compose](git-compose.md) y
+> [ADR-0010](../adr/0010-desarrollo-y-despliegue-desde-git.md).
+
 CHROMAT se instala mediante un procedimiento **semiautomatizado**. El script
 `prepare-ubuntu-production-host.sh` prepara de forma idempotente el host, pero
 la custodia de secretos, la emisión de TLS, la comprobación de migraciones y
