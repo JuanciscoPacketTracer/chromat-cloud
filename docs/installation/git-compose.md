@@ -4,9 +4,9 @@ Guía para **Ubuntu Server 26.04 LTS amd64**, una VM con red puente, 4 vCPU,
 8 GB de RAM y disco de 80 GB. Necesita Internet, acceso SSH y el puerto 443
 libre. No necesita instalar Node.js, Python ni MariaDB en Ubuntu.
 
-La instalación, HTTPS y el reinicio se comprobaron en una VM limpia. La
-actualización con `scripts/update.sh` aún está pendiente de comprobar en ella.
-Ejecute los comandos de cada bloque por separado y deténgase ante cualquier error.
+La instalación, HTTPS, el reinicio y una actualización con
+`scripts/update.sh --sudo` se comprobaron en una VM limpia. Ejecute los
+comandos de cada bloque por separado y deténgase ante cualquier error.
 
 ## 1. Conectarse a la VM
 
