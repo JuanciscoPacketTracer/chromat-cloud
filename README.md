@@ -102,11 +102,13 @@ sin backups no protege datos irremplazables frente a pérdida del disco.
 | Panel web | Consulta de fuentes, eventos, estado e historial; falta mejorar y validar la experiencia con usuarios. |
 | Raspberry Pi | Captura y envío pendientes de implementar y probar con hardware. |
 | Telegram | Worker opcional; envío real requiere validación independiente. |
-| Git + Compose en Ubuntu | Flujo vigente; falta demostrar instalación y actualización en la VM objetivo. |
+| Git + Compose en Ubuntu | Instalación, reinicio y actualización comprobados en una VM de laboratorio; no equivalen a validación productiva. |
 
 El siguiente objetivo es demostrar una fotografía real desde Raspberry Pi,
 su clasificación y su consulta en el panel. Después se medirá el desempeño
 del modelo real. El entrenamiento no se sustituye con pruebas del simulador.
+El [plan de desarrollo funcional](docs/plan-desarrollo.md) detalla las etapas,
+sus dependencias y los criterios para validar cada módulo.
 
 Las pruebas unitarias de la API se ejecutan desde `api/`:
 
