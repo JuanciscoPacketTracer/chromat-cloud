@@ -99,7 +99,7 @@ sin backups no protege datos irremplazables frente a pérdida del disco.
 | Ingesta, persistencia, jobs y autenticación | Implementados; comprobar el flujo completo en cada instalación. |
 | HSV | Heurística sobre el color promedio de la imagen; falta validación con fotografías reales. |
 | CNN | Simulador determinista basado en un hash, no una red entrenada ni una medida científica de confianza. |
-| Panel web | Consulta de fuentes, eventos, estado e historial; falta mejorar y validar la experiencia con usuarios. |
+| Panel web | Consulta de fuentes, resultado oficial, estado e historial para operador y productor; falta validar la experiencia con usuarios. |
 | Raspberry Pi | Captura y envío pendientes de implementar y probar con hardware. |
 | Telegram | Worker opcional; envío real requiere validación independiente. |
 | Git + Compose en Ubuntu | Instalación, reinicio y actualización comprobados en una VM de laboratorio; no equivalen a validación productiva. |
@@ -116,6 +116,14 @@ Las pruebas unitarias de la API se ejecutan desde `api/`:
 cd api
 npm test
 ```
+
+El panel en `/panel/` ofrece consulta de solo lectura: selecciona una fuente
+y actualiza la consulta para ver eventos y estado. El productor solo accede a
+fuentes asignadas. La lista muestra hasta 100 eventos y el historial hasta 100
+observaciones aceptadas; un estado agregado vacío no implica necesariamente que
+no haya eventos. HSV es experimental y CNN es un simulador, no una red entrenada:
+sus resultados no están validados y no son una recomendación de cosecha.
+No se muestran imágenes crudas en el panel.
 
 El harness aislado crea y elimina sus propios servicios y datos de prueba.
 Requiere Docker, acceso a imágenes y capacidad para construir:

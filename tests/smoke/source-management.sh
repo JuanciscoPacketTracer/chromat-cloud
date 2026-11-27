@@ -52,18 +52,6 @@ new_key="$(node -e 'const fs=require("fs"); process.stdout.write(JSON.parse(fs.r
 smoke_curl --silent --show-error --fail \
   -H "Authorization: Bearer $old_key" "$base_url/api/v1/events/00000000-0000-4000-8000-000000000000" >/dev/null || [[ "$?" == 22 ]]
 
-smoke_curl --silent --show-error --fail \
-  -H "Cookie: $cookie_header" -H "X-CSRF-Token: $csrf_token" \
-  -X PATCH -H 'content-type: application/json' \
-  -d '{"status":"revoked"}' "$base_url/api/v1/admin/sources/$source_id" >/dev/null
-
-revoked_status="$(
-  smoke_curl --silent --show-error -o /dev/null -w '%{http_code}' \
-    -H "Authorization: Bearer $new_key" \
-    "$base_url/api/v1/events/00000000-0000-4000-8000-000000000000"
-)"
-[[ "$revoked_status" == "401" ]]
-
 producer_body="$(
   smoke_curl --silent --show-error --fail \
     -H "Cookie: $cookie_header" -H "X-CSRF-Token: $csrf_token" \
@@ -94,5 +82,34 @@ producer_sources="$(
 )"
 grep -q "$test_source_id" <<<"$producer_sources"
 ! grep -q "$source_id" <<<"$producer_sources"
+
+for suffix in events state state/history; do
+  smoke_curl --silent --show-error --fail -o /dev/null \
+    -H "Cookie: $producer_cookie_header" \
+    "$base_url/api/v1/producer/sources/$test_source_id/$suffix"
+  denied_status="$(smoke_curl --silent --show-error -o /dev/null -w '%{http_code}' \
+    -H "Cookie: $producer_cookie_header" \
+    "$base_url/api/v1/producer/sources/$source_id/$suffix")"
+  [[ "$denied_status" == "404" ]]
+done
+admin_status="$(smoke_curl --silent --show-error -o /dev/null -w '%{http_code}' \
+  -H "Cookie: $producer_cookie_header" "$base_url/api/v1/admin/sources")"
+[[ "$admin_status" == "401" ]]
+write_status="$(smoke_curl --silent --show-error -o /dev/null -w '%{http_code}' \
+  -H "Cookie: $producer_cookie_header" -X POST \
+  "$base_url/api/v1/producer/sources/$test_source_id/events")"
+[[ "$write_status" == "404" || "$write_status" == "405" ]]
+
+smoke_curl --silent --show-error --fail \
+  -H "Cookie: $cookie_header" -H "X-CSRF-Token: $csrf_token" \
+  -X PATCH -H 'content-type: application/json' \
+  -d '{"status":"revoked"}' "$base_url/api/v1/admin/sources/$source_id" >/dev/null
+
+revoked_status="$(
+  smoke_curl --silent --show-error -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer $new_key" \
+    "$base_url/api/v1/events/00000000-0000-4000-8000-000000000000"
+)"
+[[ "$revoked_status" == "401" ]]
 
 printf 'PASS: monitoring source management contract\n'

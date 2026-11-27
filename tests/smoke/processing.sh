@@ -5,11 +5,15 @@ source "$(dirname "${BASH_SOURCE[0]}")/compose.sh"
 
 base_url="${BASE_URL:-https://localhost}"
 api_key="${SMOKE_SOURCE_API_KEY:?SMOKE_SOURCE_API_KEY is required}"
+source_id="${SMOKE_SOURCE_ID:?SMOKE_SOURCE_ID is required}"
+username="${ADMIN_USERNAME:?ADMIN_USERNAME is required}"
+password="${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}"
 event_id="$(node -e 'console.log(crypto.randomUUID())')"
 occurred_at="$(node -e 'console.log(new Date().toISOString())')"
 image_file="$(mktemp)"
 response_body="$(mktemp)"
-trap 'rm -f "$image_file" "$response_body"' EXIT
+cookie_file="$(mktemp)"
+trap 'rm -f "$image_file" "$response_body" "$cookie_file"' EXIT
 
 base64 --decode >"$image_file" <<'PNG'
 iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNo+M8AAAOCAYB04NylAAAAAElFTkSuQmCC
@@ -68,6 +72,25 @@ for _ in $(seq 1 30); do
       if (!event.analysis_runs.some((run) => run.algorithm === "cnn")) process.exit(1);
       if (event.current_result?.algorithm !== "hsv") process.exit(1);
     ' <<<"$status_body"
+    smoke_curl --silent --show-error --fail \
+      -c "$cookie_file" -o /dev/null -H 'content-type: application/json' \
+      -d "{\"username\":\"$username\",\"password\":\"$password\"}" \
+      "$base_url/api/v1/admin/login"
+    cookie_header="$(awk '$6 == "chromat_session" { print $6 "=" $7 }' "$cookie_file")"
+    list_body="$(smoke_curl --silent --show-error --fail \
+      -H "Cookie: $cookie_header" "$base_url/api/v1/admin/sources/$source_id/events")"
+    node -e '
+      const { events } = JSON.parse(require("fs").readFileSync(0, "utf8"));
+      const event = events.find((item) => item.event_id === process.argv[1]);
+      if (!event || event.status !== "completed" || event.current_result?.algorithm !== "hsv" ||
+          !event.current_result.algorithm_version) throw Error("missing official run");
+      const raw = event.current_result.result;
+      if (typeof raw !== "string") throw Error("expected MariaDB result JSON string");
+      const result = JSON.parse(raw);
+      if (typeof result?.classification !== "string" || !result.classification) {
+        throw Error("missing official classification");
+      }
+    ' "$event_id" <<<"$list_body"
     printf 'PASS: recoverable HSV and CNN processing contract\n'
     exit 0
   fi
