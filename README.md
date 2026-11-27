@@ -125,6 +125,17 @@ no haya eventos. HSV es experimental y CNN es un simulador, no una red entrenada
 sus resultados no están validados y no son una recomendación de cosecha.
 No se muestran imágenes crudas en el panel.
 
+La bitácora usa tarjetas con estado, resultado oficial, versión y trazabilidad;
+permite buscar fuentes y filtrar los eventos consultados por estado o identificador.
+El resumen cuenta únicamente esos eventos (máximo 100), no el total histórico.
+Temperatura (`°C`) y humedad relativa (`% HR`) son mediciones opcionales de cada
+captura, no lecturas en vivo ni evidencia de que el sensor esté conectado.
+El resumen muestra las mediciones del evento de captura más reciente consultado;
+si faltan, indica **Sin medición**, sin sustituirlas por valores anteriores.
+La demo de fotografías no fabrica mediciones. La API de consulta de eventos para
+operador/productor devuelve `temperature_c` y `humidity_rh` como número o `null`,
+con los mismos permisos por fuente y sin acceso adicional a imágenes crudas.
+
 Para crear una fuente de prueba y enviar las cinco fotografías incluidas,
 ejecute explícitamente en la VM:
 

@@ -86,6 +86,7 @@ async function listSourceEvents(response, sourceId) {
   const [rows] = await pool.query(
     `SELECT e.event_id, e.occurred_at, e.received_at, e.processed_at,
             e.clock_suspect, e.status, e.crop, e.derived_data,
+            e.temperature_c, e.humidity_rh,
             ar.run_id, ar.algorithm, ar.algorithm_version, ar.model_version,
             ar.model_sha256, ar.started_at, ar.completed_at, ar.result
        FROM monitoring_events e
@@ -104,6 +105,8 @@ async function listSourceEvents(response, sourceId) {
       clock_suspect: Boolean(event.clock_suspect),
       status: event.status,
       crop: event.crop,
+      temperature_c: event.temperature_c == null ? null : Number(event.temperature_c),
+      humidity_rh: event.humidity_rh == null ? null : Number(event.humidity_rh),
       current_result: event.run_id
         ? {
             run_id: Number(event.run_id),

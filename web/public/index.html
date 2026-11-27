@@ -3,73 +3,104 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>CHROMAT Server</title>
+    <meta name="theme-color" content="#f7f7ee">
+    <title>CHROMAT · Monitoreo</title>
     <link rel="stylesheet" href="/panel/styles.css">
   </head>
   <body>
-    <main class="shell">
-      <header>
-        <p class="eyebrow">CHROMAT Server</p>
-        <h1>Panel de monitoreo</h1>
-        <p class="muted">Consulta fuentes, eventos y estado agregado.</p>
-        <p class="notice">Resultados experimentales, no validados científicamente. No son una recomendación de cosecha. HSV es una heurística experimental; CNN es un simulador, no una red entrenada.</p>
-      </header>
-
-      <section id="login-view" class="card" aria-labelledby="login-title">
-        <h2 id="login-title">Iniciar sesión</h2>
-        <fieldset class="role-choice">
-          <legend>Tipo de acceso</legend>
-          <label><input type="radio" name="role" value="operator" checked> Operador</label>
-          <label><input type="radio" name="role" value="producer"> Productor</label>
-        </fieldset>
-        <form id="login-form">
-          <label>Usuario <input id="username" name="username" autocomplete="username" required></label>
-          <label>Contraseña <input id="password" name="password" type="password" autocomplete="current-password" required></label>
-          <button id="login-submit" type="submit">Iniciar sesión</button>
-        </form>
-        <p id="login-message" role="status" aria-live="polite"></p>
-        <p id="login-error" class="error" role="alert" hidden></p>
+    <a class="skip-link" href="#main">Ir al contenido</a>
+    <header class="topbar">
+      <a class="brand" href="/panel/" aria-label="CHROMAT, inicio">
+        <span class="brand-mark" aria-hidden="true">c<span></span></span>
+        <span>CHROMAT<small>Observa. Registra. Comprende.</small></span>
+      </a>
+      <span class="environment"><span class="dot" aria-hidden="true"></span>Prototipo de investigación</span>
+    </header>
+    <main id="main" class="shell">
+      <section id="login-view" class="login-layout" aria-labelledby="login-title">
+        <div class="login-intro">
+          <p class="eyebrow">Monitoreo de frutos</p>
+          <h1>Una nueva mirada<br>a tu cultivo.</h1>
+          <p>Consulta las observaciones de tus fuentes de monitoreo y sigue su historia, desde un solo lugar.</p>
+          <div class="field-illustration" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+          <div class="intro-features"><span>Fuentes de monitoreo</span><span>Mediciones registradas</span><span>Resultados trazables</span></div>
+        </div>
+        <div class="card login-card">
+          <p class="eyebrow">Tu espacio de consulta</p>
+          <h2 id="login-title">Bienvenido a CHROMAT</h2>
+          <p class="muted">Elige tu tipo de acceso para continuar.</p>
+          <fieldset class="role-choice">
+            <legend class="sr-only">Tipo de acceso</legend>
+            <label><input type="radio" name="role" value="operator" checked><span>Operador</span></label>
+            <label><input type="radio" name="role" value="producer"><span>Productor</span></label>
+          </fieldset>
+          <form id="login-form">
+            <label>Usuario <input id="username" name="username" autocomplete="username" placeholder="Tu nombre de usuario" required></label>
+            <label>Contraseña <input id="password" name="password" type="password" autocomplete="current-password" placeholder="Tu contraseña" required></label>
+            <button id="login-submit" type="submit">Entrar al panel <span aria-hidden="true">→</span></button>
+          </form>
+          <p id="login-message" role="status" aria-live="polite"></p>
+          <p id="login-error" class="error" role="alert" hidden></p>
+          <p class="login-note">Acceso privado. El productor consulta únicamente las fuentes asignadas a su cuenta.</p>
+        </div>
       </section>
 
       <section id="dashboard-view" hidden aria-labelledby="dashboard-title">
-        <div class="toolbar">
+        <div class="toolbar dashboard-heading">
           <div>
-            <h2 id="dashboard-title" tabindex="-1"></h2>
+            <p class="eyebrow">Del campo al registro</p>
+            <h1 id="dashboard-title" tabindex="-1">Tu panel de monitoreo</h1>
             <p id="dashboard-subtitle" class="muted"></p>
           </div>
-          <button id="logout" class="secondary" type="button">Cerrar sesión</button>
+          <div class="account-actions"><span id="role-badge" class="badge"></span><button id="logout" class="secondary" type="button">Cerrar sesión</button></div>
         </div>
-        <section class="card" aria-labelledby="sources-title">
+        <aside class="notice">
+          <span class="notice-symbol" aria-hidden="true">i</span>
+          <p><strong>Una herramienta experimental, no una indicación de cosecha.</strong>
+          HSV es una heurística experimental y CNN es un simulador, no una red entrenada. Los resultados no están validados científicamente.</p>
+        </aside>
+        <section class="card sources-panel" aria-labelledby="sources-title">
           <div class="section-heading">
-            <h2 id="sources-title">Fuentes de monitoreo</h2>
+            <div><p class="eyebrow">01 · Selecciona el origen</p><h2 id="sources-title">Fuentes de monitoreo <span id="source-count" class="count">—</span></h2></div>
             <button id="refresh-sources" class="secondary" type="button">Actualizar fuentes</button>
           </div>
-          <div id="sources-message" role="status" aria-live="polite"></div>
-          <div id="sources" class="source-grid"></div>
+          <label class="search-field">Buscar fuente <input id="source-search" type="search" placeholder="Nombre, cultivo o identificador" autocomplete="off"></label>
+          <p class="muted source-help">“Activa” significa habilitada en el servidor, no conectada en tiempo real.</p>
+          <p id="sources-message" class="muted" role="status" aria-live="polite"></p>
+          <div id="sources" class="source-grid" aria-busy="false"></div>
         </section>
+        <div id="choose-source" class="choose-source"><span class="choose-symbol" aria-hidden="true">↗</span><h2>Todo empieza con una fuente</h2><p>Selecciona una para explorar sus eventos, mediciones y estado agregado.</p></div>
         <section id="details" hidden aria-labelledby="details-title">
           <div class="section-heading details-heading">
-            <h2 id="details-title" tabindex="-1"></h2>
+            <div><p class="eyebrow">02 · Explora las observaciones</p><h2 id="details-title" tabindex="-1"></h2><p id="source-description" class="muted"></p></div>
             <button id="refresh-details" class="secondary" type="button">Actualizar consulta</button>
           </div>
-          <section class="card" aria-labelledby="events-title">
-            <h3 id="events-title">Eventos y resultado oficial</h3>
-            <p class="muted">Hasta 100 eventos, ordenados por fecha de captura. El resultado oficial es el configurado en el servidor, no una validación científica.</p>
-            <div id="events" aria-live="polite"></div>
+          <nav class="section-nav" aria-label="Consulta de la fuente"><a href="#events-section">Bitácora de eventos</a><a href="#state-section">Estado agregado</a><a href="#history-section">Historial</a></nav>
+          <div id="event-overview" aria-live="polite"></div>
+          <section id="events-section" class="card" aria-labelledby="events-title">
+            <div class="section-heading"><div><p class="eyebrow">Registro de la fuente</p><h3 id="events-title">Bitácora de eventos</h3></div><span class="badge neutral">Hasta 100 eventos</span></div>
+            <p class="muted">Ordenados por fecha de captura. “Oficial” identifica el resultado elegido por el servidor, no una validación científica.</p>
+            <div class="event-tools">
+              <label>Estado <select id="event-status"><option value="all">Todos los estados</option><option value="completed">Completados</option><option value="pending">Pendientes</option><option value="processing">Procesando</option><option value="failed">Con fallo</option></select></label>
+              <label class="event-search">Buscar evento <input id="event-search" type="search" placeholder="Identificador del evento" autocomplete="off"></label>
+            </div>
+            <p id="events-message" class="muted" role="status"></p>
+            <div id="events" aria-live="polite" aria-busy="false"></div>
           </section>
-          <section class="card" aria-labelledby="state-title">
-            <h3 id="state-title">Estado agregado</h3>
-            <p class="muted">Resumen calculado a partir de observaciones elegibles; no todos los eventos se incluyen.</p>
-            <div id="state" aria-live="polite"></div>
+          <section id="state-section" class="card" aria-labelledby="state-title">
+            <div class="section-heading"><div><p class="eyebrow">Una vista en conjunto</p><h3 id="state-title">Estado agregado</h3></div><span class="badge neutral">Observaciones elegibles</span></div>
+            <p class="muted">Resumen calculado según las reglas del servidor. No todos los eventos se incluyen; no representa un porcentaje de maduración.</p>
+            <div id="state" aria-live="polite" aria-busy="false"></div>
           </section>
-          <section class="card" aria-labelledby="history-title">
-            <h3 id="history-title">Historial de observaciones aceptadas</h3>
-            <p class="muted">Hasta 100 observaciones, ordenadas por fecha de captura.</p>
-            <div id="state-history" aria-live="polite"></div>
+          <section id="history-section" class="card" aria-labelledby="history-title">
+            <div class="section-heading"><div><p class="eyebrow">Trazabilidad</p><h3 id="history-title">Historial de observaciones aceptadas</h3></div><span class="badge neutral">Hasta 100 observaciones</span></div>
+            <p class="muted">Ordenado por fecha de captura. La confianza es un valor no calibrado del algoritmo, no una probabilidad científica.</p>
+            <div id="state-history" aria-live="polite" aria-busy="false"></div>
           </section>
         </section>
         <p id="dashboard-error" class="error" role="alert" hidden></p>
       </section>
+      <footer class="footer"><strong>CHROMAT</strong><span>Observaciones para comprender, no para prescribir.</span><span>Las fechas del panel se muestran en UTC.</span></footer>
     </main>
     <script type="module" src="/panel/app.js"></script>
   </body>

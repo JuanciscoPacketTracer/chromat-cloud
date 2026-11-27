@@ -23,7 +23,7 @@ smoke_curl --silent --show-error --fail-with-body \
   -o "$response_body" \
   -X POST "$base_url/api/v1/events" \
   -H "Authorization: Bearer $api_key" \
-  -F "metadata={\"event_id\":\"$event_id\",\"occurred_at\":\"$occurred_at\"};type=application/json" \
+  -F "metadata={\"event_id\":\"$event_id\",\"occurred_at\":\"$occurred_at\",\"temperature_c\":21.75,\"humidity_rh\":0};type=application/json" \
   -F "image=@$image_file;type=image/png"
 
 observed_status=""
@@ -84,6 +84,9 @@ for _ in $(seq 1 30); do
       const event = events.find((item) => item.event_id === process.argv[1]);
       if (!event || event.status !== "completed" || event.current_result?.algorithm !== "hsv" ||
           !event.current_result.algorithm_version) throw Error("missing official run");
+      if (event.temperature_c !== 21.75 || event.humidity_rh !== 0) {
+        throw Error("sensor readings must be JSON numbers and preserve zero");
+      }
       const raw = event.current_result.result;
       if (typeof raw !== "string") throw Error("expected MariaDB result JSON string");
       const result = JSON.parse(raw);

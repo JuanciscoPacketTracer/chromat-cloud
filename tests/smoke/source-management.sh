@@ -8,7 +8,8 @@ password="${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}"
 cookie_file="$(mktemp)"
 login_body="$(mktemp)"
 response_body="$(mktemp)"
-trap 'rm -f "$cookie_file" "$login_body" "$response_body"' EXIT
+image_file="$(mktemp)"
+trap 'rm -f "$cookie_file" "$login_body" "$response_body" "$image_file"' EXIT
 run_suffix="$(date +%s)-$$"
 
 smoke_curl --silent --show-error --fail \
@@ -39,7 +40,7 @@ cleanup() {
     -H "Cookie: $cookie_header" -H "X-CSRF-Token: $csrf_token" \
     -X POST "$base_url/api/v1/admin/sources/$test_source_id/cleanup" >/dev/null
 }
-trap 'cleanup; rm -f "$cookie_file" "$login_body" "$response_body"' EXIT
+trap 'cleanup; rm -f "$cookie_file" "$login_body" "$response_body" "$image_file"' EXIT
 
 rotate_body="$(
   smoke_curl --silent --show-error --fail \
@@ -68,7 +69,7 @@ smoke_curl --silent --show-error --fail \
 
 producer_cookie="$(mktemp)"
 producer_login_body="$(mktemp)"
-trap 'cleanup; rm -f "$cookie_file" "$login_body" "$response_body" "$producer_cookie" "$producer_login_body"' EXIT
+trap 'cleanup; rm -f "$cookie_file" "$login_body" "$response_body" "$image_file" "$producer_cookie" "$producer_login_body"' EXIT
 smoke_curl --silent --show-error --fail \
   -c "$producer_cookie" -o "$producer_login_body" \
   -H 'content-type: application/json' \
@@ -83,6 +84,38 @@ producer_sources="$(
 grep -q "$test_source_id" <<<"$producer_sources"
 ! grep -q "$source_id" <<<"$producer_sources"
 
+test_key="$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0)).api_key)' <<<"$test_source_body")"
+base64 --decode >"$image_file" <<'PNG'
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNo+M8AAAOCAYB04NylAAAAAElFTkSuQmCC
+PNG
+measured_event="$(node -e 'console.log(crypto.randomUUID())')"
+empty_event="$(node -e 'console.log(crypto.randomUUID())')"
+occurred_at="$(node -e 'console.log(new Date().toISOString())')"
+for metadata in \
+  "{\"event_id\":\"$measured_event\",\"occurred_at\":\"$occurred_at\",\"temperature_c\":0,\"humidity_rh\":62.5}" \
+  "{\"event_id\":\"$empty_event\",\"occurred_at\":\"$occurred_at\"}"; do
+  smoke_curl --silent --show-error --fail -o /dev/null \
+    -H "Authorization: Bearer $test_key" -F "metadata=$metadata;type=application/json" \
+    -F "image=@$image_file;type=image/png" "$base_url/api/v1/events"
+done
+for role in admin producer; do
+  role_cookie="$cookie_header"
+  [[ "$role" != producer ]] || role_cookie="$producer_cookie_header"
+  events_body="$(smoke_curl --silent --show-error --fail -H "Cookie: $role_cookie" \
+    "$base_url/api/v1/$role/sources/$test_source_id/events")"
+  node -e '
+    const {events} = JSON.parse(require("fs").readFileSync(0));
+    const measured = events.find((event) => event.event_id === process.argv[1]);
+    const empty = events.find((event) => event.event_id === process.argv[2]);
+    if (measured?.temperature_c !== 0 || measured.humidity_rh !== 62.5 ||
+        empty?.temperature_c !== null || empty.humidity_rh !== null) {
+      throw Error("sensor contract: numbers, zero and explicit null required for both roles");
+    }
+    if (events.some((event) => "raw_file" in event || "storage_path" in event || "image" in event)) {
+      throw Error("raw image metadata must not be added to panel event listings");
+    }
+  ' "$measured_event" "$empty_event" <<<"$events_body"
+done
 for suffix in events state state/history; do
   smoke_curl --silent --show-error --fail -o /dev/null \
     -H "Cookie: $producer_cookie_header" \
@@ -92,6 +125,9 @@ for suffix in events state state/history; do
     "$base_url/api/v1/producer/sources/$source_id/$suffix")"
   [[ "$denied_status" == "404" ]]
 done
+unauthorized_status="$(smoke_curl --silent --show-error -o /dev/null -w '%{http_code}' \
+  "$base_url/api/v1/producer/sources/$test_source_id/events")"
+[[ "$unauthorized_status" == "401" ]]
 admin_status="$(smoke_curl --silent --show-error -o /dev/null -w '%{http_code}' \
   -H "Cookie: $producer_cookie_header" "$base_url/api/v1/admin/sources")"
 [[ "$admin_status" == "401" ]]
